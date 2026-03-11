@@ -7,7 +7,7 @@ use crate::resources::*;
 
 pub fn status_bar_ui(
     mut contexts: EguiContexts,
-    browser: Res<BrowserState>,
+    mut browser: ResMut<BrowserState>,
     current: Res<CurrentImage>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -16,12 +16,15 @@ pub fn status_bar_ui(
 
     egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            // Zoom
-            let zoom_pct = (browser.zoom * 100.0).round() as i32;
-            ui.label(format!("Zoom: {zoom_pct}%"));
-
-            if browser.snap_zoom {
-                ui.label("[snap]");
+            // Zoom slider (logarithmic for smooth feel across range)
+            ui.label("Zoom:");
+            let mut zoom_pct = browser.zoom * 100.0;
+            let slider = egui::Slider::new(&mut zoom_pct, 10.0..=5000.0)
+                .logarithmic(true)
+                .suffix("%")
+                .max_decimals(0);
+            if ui.add(slider).changed() {
+                browser.zoom = zoom_pct / 100.0;
             }
 
             ui.separator();

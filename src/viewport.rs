@@ -8,7 +8,6 @@ use bevy::window::PrimaryWindow;
 use crate::image_loader;
 use crate::resources::*;
 
-const ZOOM_SPEED: f32 = 0.1;
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 50.0;
 const GRID_COLOR: Color = Color::srgba(1.0, 1.0, 0.0, 0.4);
@@ -78,10 +77,19 @@ pub fn pan_zoom(
         browser.pan = Vec2::ZERO;
     }
 
-    // Zoom via scroll wheel
+    // Zoom via scroll wheel — proportional scaling for smooth feel
     for ev in scroll_events.read() {
-        let delta = ev.y * ZOOM_SPEED * browser.zoom;
-        browser.zoom = (browser.zoom + delta).clamp(MIN_ZOOM, MAX_ZOOM);
+        if ev.y == 0.0 {
+            continue;
+        }
+        // Multiply/divide by a fixed factor for consistent feel at all zoom levels
+        let factor = 1.15_f32;
+        if ev.y > 0.0 {
+            browser.zoom *= factor;
+        } else {
+            browser.zoom /= factor;
+        }
+        browser.zoom = browser.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         if browser.snap_zoom {
             browser.zoom = browser.zoom.round().max(1.0);
         }
@@ -157,7 +165,82 @@ pub fn apply_camera(
     for mut tf in &mut camera_q {
         tf.translation.x = -browser.pan.x;
         tf.translation.y = -browser.pan.y;
-        tf.scale = Vec3::splat(1.0 / browser.zoom);
+        let safe_zoom = browser.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        tf.scale = Vec3::splat(1.0 / safe_zoom);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts for grid
+// ---------------------------------------------------------------------------
+
+/// All divisors of `dim` that are >= 8.
+fn valid_cell_sizes(dim: u32) -> Vec<u32> {
+    (8..=dim).filter(|&s| dim % s == 0).collect()
+}
+
+fn prev_valid_size(valid: &[u32], current: u32, dim: u32) -> u32 {
+    if valid.is_empty() {
+        return (8..current).rev().find(|&d| dim % d == 0).unwrap_or(current);
+    }
+    valid.iter().copied().rev().find(|&s| s < current).unwrap_or(current)
+}
+
+fn next_valid_size(valid: &[u32], current: u32, dim: u32) -> u32 {
+    if valid.is_empty() {
+        return ((current + 1)..=dim).find(|&d| d >= 8 && dim % d == 0).unwrap_or(current);
+    }
+    valid.iter().copied().find(|&s| s > current).unwrap_or(current)
+}
+
+pub fn grid_keyboard(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    current: Res<CurrentImage>,
+    mut browser: ResMut<BrowserState>,
+) {
+    // G — toggle grid
+    if keyboard.just_pressed(KeyCode::KeyG) {
+        browser.grid_visible = !browser.grid_visible;
+    }
+
+    if current.width == 0 || current.height == 0 {
+        return;
+    }
+
+    // Initialize cell size if needed
+    if browser.cell_w == 0 {
+        browser.cell_w = current.width;
+    }
+    if browser.cell_h == 0 {
+        browser.cell_h = current.height;
+    }
+
+    let valid_w = valid_cell_sizes(current.width);
+    let valid_h = valid_cell_sizes(current.height);
+
+    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    let adjust_w = ctrl || !shift;
+    let adjust_h = shift || !ctrl;
+
+    // Minus — smaller cells (more divisions)
+    if keyboard.just_pressed(KeyCode::Minus) || keyboard.just_pressed(KeyCode::NumpadSubtract) {
+        if adjust_w {
+            browser.cell_w = prev_valid_size(&valid_w, browser.cell_w, current.width);
+        }
+        if adjust_h {
+            browser.cell_h = prev_valid_size(&valid_h, browser.cell_h, current.height);
+        }
+    }
+
+    // Plus — larger cells (fewer divisions)
+    if keyboard.just_pressed(KeyCode::Equal) || keyboard.just_pressed(KeyCode::NumpadAdd) {
+        if adjust_w {
+            browser.cell_w = next_valid_size(&valid_w, browser.cell_w, current.width);
+        }
+        if adjust_h {
+            browser.cell_h = next_valid_size(&valid_h, browser.cell_h, current.height);
+        }
     }
 }
 

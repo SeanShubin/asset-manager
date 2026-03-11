@@ -4,6 +4,8 @@ use bevy::prelude::*;
 use std::path::PathBuf;
 
 use crate::data::FileRef;
+use crate::ui_persist::PersistedUiState;
+use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
 // Data directory
@@ -25,12 +27,54 @@ pub struct ManagerState {
 }
 
 // ---------------------------------------------------------------------------
-// Tree selection
+// Tree selection + expansion state
 // ---------------------------------------------------------------------------
 
 #[derive(Resource, Default)]
 pub struct TreeSelection {
     pub selected_path: Option<FileRef>,
+}
+
+#[derive(Resource)]
+pub struct TreeState {
+    /// Set of path strings for expanded nodes
+    pub expanded: BTreeSet<String>,
+    /// Scroll offset to restore
+    pub scroll_y: f32,
+    /// Whether scroll needs restoring (first frame only)
+    pub restore_scroll: bool,
+    /// Debounce timer for scroll saves — counts down after scroll stops
+    pub scroll_settle_timer: f32,
+    /// Whether scroll changed and is waiting to settle
+    pub scroll_pending_save: bool,
+    /// Set to true when a discrete action (expand/collapse) needs saving
+    pub save_requested: bool,
+}
+
+impl Default for TreeState {
+    fn default() -> Self {
+        Self {
+            expanded: BTreeSet::new(),
+            scroll_y: 0.0,
+            restore_scroll: false,
+            scroll_settle_timer: 0.0,
+            scroll_pending_save: false,
+            save_requested: false,
+        }
+    }
+}
+
+impl TreeState {
+    pub fn from_persisted(persisted: &PersistedUiState) -> Self {
+        Self {
+            expanded: persisted.expanded_nodes.clone(),
+            scroll_y: persisted.tree_scroll_y,
+            restore_scroll: true,
+            scroll_settle_timer: 0.0,
+            scroll_pending_save: false,
+            save_requested: false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

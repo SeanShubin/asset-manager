@@ -42,15 +42,14 @@ Zip-internal paths use `//` separator: `D:/foo/pack.zip//sprites/hero.png`
 - [x] Verify it compiles
 
 ### Phase 2: Grid Controls
-- [ ] Grid tab in detail panel: interactive cell size +/- buttons (not just keyboard)
-- [ ] `valid_cell_sizes` helper (divisors >= 8)
-- [ ] Apply Grid / Clear Grid buttons with persistence to `grids` table
-- [x] Snap zoom toggle (wired in BrowserState + pan_zoom, needs UI toggle)
-- [ ] Snap zoom checkbox in Grid tab UI
-- [x] Tile preview mode: spawn/manage tile sprites (viewport.rs, needs UI controls)
-- [ ] Tile preview checkbox + cols/rows sliders in Grid tab UI
-- [x] Auto-fit zoom on image load (viewport.rs)
-- [ ] Keyboard shortcuts for grid: G toggle, +/- cell size, Ctrl/Shift modifiers
+- [x] Grid tab in detail panel: interactive cell size +/- buttons
+- [x] `valid_cell_sizes` helper (divisors >= 8)
+- [x] Apply Grid / Clear Grid buttons with persistence to `grids` table
+- [x] Snap zoom toggle + checkbox in Grid tab UI
+- [x] Tile preview checkbox + cols/rows drag values in Grid tab UI
+- [x] Auto-fit zoom on image load
+- [x] Keyboard shortcuts: G toggle grid, +/- cell size, Ctrl/Shift modifiers
+- [x] Saved grid indicator in Grid tab
 
 ### Phase 3: Hierarchy Designations
 - [x] Browse tab: "Mark as Asset Root" button (persists to `asset_roots`)
