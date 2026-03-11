@@ -10,6 +10,15 @@ use crate::resources::*;
 
 const MAX_DEPTH: usize = 15;
 
+/// Mutable state threaded through the tree rendering call chain.
+struct TreeContext<'a> {
+    selection: &'a mut TreeSelection,
+    current: &'a mut CurrentImage,
+    camera: &'a mut CameraState,
+    grid_state: &'a mut GridState,
+    tree_state: &'a mut TreeState,
+}
+
 // ---------------------------------------------------------------------------
 // System
 // ---------------------------------------------------------------------------
@@ -18,8 +27,8 @@ pub fn tree_panel_ui(
     mut contexts: EguiContexts,
     mut selection: ResMut<TreeSelection>,
     mut current: ResMut<CurrentImage>,
-    mut browser: ResMut<BrowserState>,
-    mut images: ResMut<Assets<Image>>,
+    mut camera: ResMut<CameraState>,
+    mut grid_state: ResMut<GridState>,
     manager: Res<ManagerState>,
     mut tree_state: ResMut<TreeState>,
 ) {
@@ -28,7 +37,7 @@ pub fn tree_panel_ui(
     };
 
     egui::SidePanel::left("tree_panel")
-        .default_width(280.0)
+        .default_width(LEFT_PANEL_WIDTH)
         .show(ctx, |ui| {
             ui.heading("File Browser");
 
@@ -73,34 +82,36 @@ pub fn tree_panel_ui(
 
             let scroll_id = egui::Id::new("tree_scroll");
 
-            // Build scroll area — restore offset on first frame if needed
             let mut scroll_area = egui::ScrollArea::vertical().id_salt(scroll_id);
             if tree_state.restore_scroll {
                 scroll_area = scroll_area.vertical_scroll_offset(tree_state.scroll_y);
                 tree_state.restore_scroll = false;
             }
 
+            let mut ctx = TreeContext {
+                selection: &mut selection,
+                current: &mut current,
+                camera: &mut camera,
+                grid_state: &mut grid_state,
+                tree_state: &mut tree_state,
+            };
+
             let output = scroll_area.show(ui, |ui| {
                 #[cfg(target_os = "windows")]
-                show_drives(ui, &mut selection, &mut current, &mut browser, &mut images, &manager.data, &mut tree_state);
+                show_drives(ui, &mut ctx, &manager.data);
 
                 #[cfg(not(target_os = "windows"))]
-                show_dir(
-                    ui, Path::new("/"), 0,
-                    &mut selection, &mut current, &mut browser, &mut images,
-                    &manager.data, &mut tree_state,
-                );
+                show_dir(ui, Path::new("/"), 0, &mut ctx, &manager.data);
             });
 
-            // Clear force-open after tree has rendered
-            tree_state.force_open.clear();
+            ctx.tree_state.force_open.clear();
 
             // Track scroll position — debounce saves until scroll settles
             let new_scroll_y = output.state.offset.y;
-            if (new_scroll_y - tree_state.scroll_y).abs() > 0.5 {
-                tree_state.scroll_y = new_scroll_y;
-                tree_state.scroll_settle_timer = 0.5; // wait 0.5s after last change
-                tree_state.scroll_pending_save = true;
+            if (new_scroll_y - ctx.tree_state.scroll_y).abs() > 0.5 {
+                ctx.tree_state.scroll_y = new_scroll_y;
+                ctx.tree_state.scroll_settle_timer = SCROLL_SETTLE_SECS;
+                ctx.tree_state.scroll_pending_save = true;
             }
         });
 }
@@ -112,12 +123,8 @@ pub fn tree_panel_ui(
 #[cfg(target_os = "windows")]
 fn show_drives(
     ui: &mut egui::Ui,
-    selection: &mut TreeSelection,
-    current: &mut CurrentImage,
-    browser: &mut BrowserState,
-    images: &mut Assets<Image>,
+    ctx: &mut TreeContext,
     data: &ManagerData,
-    tree_state: &mut TreeState,
 ) {
     for letter in b'A'..=b'Z' {
         let drive = format!("{}:/", letter as char);
@@ -128,12 +135,12 @@ fn show_drives(
             let node_key = drive.clone();
 
             let header = egui::CollapsingHeader::new(label).id_salt(&drive);
-            let header = apply_open_state(header, &node_key, tree_state);
+            let header = apply_open_state(header, &node_key, ctx.tree_state);
             let response = header.show(ui, |ui| {
-                    show_dir(ui, &drive_path, 1, selection, current, browser, images, data, tree_state);
-                });
+                show_dir(ui, &drive_path, 1, ctx, data);
+            });
 
-            track_expansion(response.openness, &node_key, tree_state);
+            track_expansion(response.openness, &node_key, ctx.tree_state);
         }
     }
 }
@@ -146,12 +153,8 @@ fn show_dir(
     ui: &mut egui::Ui,
     path: &Path,
     depth: usize,
-    selection: &mut TreeSelection,
-    current: &mut CurrentImage,
-    browser: &mut BrowserState,
-    images: &mut Assets<Image>,
+    ctx: &mut TreeContext,
     data: &ManagerData,
-    tree_state: &mut TreeState,
 ) {
     if depth > MAX_DEPTH {
         ui.label("(max depth)");
@@ -193,16 +196,15 @@ fn show_dir(
         let node_key = dir_str.clone();
 
         let header = egui::CollapsingHeader::new(label).id_salt(dir);
-        let header = apply_open_state(header, &node_key, tree_state);
+        let header = apply_open_state(header, &node_key, ctx.tree_state);
         let response = header.show(ui, |ui| {
-            show_dir(ui, dir, depth + 1, selection, current, browser, images, data, tree_state);
+            show_dir(ui, dir, depth + 1, ctx, data);
         });
 
-        track_expansion(response.openness, &node_key, tree_state);
+        track_expansion(response.openness, &node_key, ctx.tree_state);
 
-        // Click on header text to select the directory
         if response.header_response.clicked() {
-            selection.selected_path = Some(FileRef::Disk(dir.clone()));
+            ctx.selection.selected_path = Some(FileRef::Disk(dir.clone()));
         }
     }
 
@@ -217,7 +219,7 @@ fn show_dir(
         let is_image = image_loader::is_image_file(name);
 
         let file_ref = FileRef::Disk(file.clone());
-        let is_selected = selection.selected_path.as_ref() == Some(&file_ref);
+        let is_selected = ctx.selection.selected_path.as_ref() == Some(&file_ref);
 
         if is_zip {
             let zip_label = egui::RichText::new(format!("  \u{1F4E6} {name}"))
@@ -226,12 +228,12 @@ fn show_dir(
             let node_key = file.to_string_lossy().replace('\\', "/");
 
             let header = egui::CollapsingHeader::new(zip_label).id_salt(file);
-            let header = apply_open_state(header, &node_key, tree_state);
+            let header = apply_open_state(header, &node_key, ctx.tree_state);
             let response = header.show(ui, |ui| {
-                    show_zip_contents(ui, file, selection, current, browser, images, data, tree_state);
-                });
+                show_zip_contents(ui, file, ctx, data);
+            });
 
-            track_expansion(response.openness, &node_key, tree_state);
+            track_expansion(response.openness, &node_key, ctx.tree_state);
         } else {
             let icon = if is_image { "\u{1F5BC}" } else { "\u{1F4C4}" };
             let label_text = format!("  {icon} {name}");
@@ -246,7 +248,7 @@ fn show_dir(
 
             let response = ui.selectable_label(is_selected, label);
             if response.clicked() {
-                select_file(file_ref, selection, current, browser, images, data);
+                apply_selection(file_ref, ctx, data);
             }
         }
     }
@@ -259,12 +261,8 @@ fn show_dir(
 fn show_zip_contents(
     ui: &mut egui::Ui,
     zip_path: &Path,
-    selection: &mut TreeSelection,
-    current: &mut CurrentImage,
-    browser: &mut BrowserState,
-    images: &mut Assets<Image>,
+    ctx: &mut TreeContext,
     data: &ManagerData,
-    tree_state: &mut TreeState,
 ) {
     let file = match std::fs::File::open(zip_path) {
         Ok(f) => f,
@@ -293,7 +291,7 @@ fn show_zip_contents(
     }
     entries.sort();
 
-    show_zip_entries(ui, zip_path, &entries, "", selection, current, browser, images, data, tree_state);
+    show_zip_entries(ui, zip_path, &entries, "", ctx, data);
 }
 
 fn show_zip_entries(
@@ -301,12 +299,8 @@ fn show_zip_entries(
     zip_path: &Path,
     entries: &[String],
     prefix: &str,
-    selection: &mut TreeSelection,
-    current: &mut CurrentImage,
-    browser: &mut BrowserState,
-    images: &mut Assets<Image>,
+    ctx: &mut TreeContext,
     data: &ManagerData,
-    tree_state: &mut TreeState,
 ) {
     let mut subdirs: Vec<String> = Vec::new();
     let mut files: Vec<String> = Vec::new();
@@ -349,15 +343,12 @@ fn show_zip_entries(
 
         let header = egui::CollapsingHeader::new(format!("\u{1F4C1} {display_name}"))
             .id_salt(format!("{}{}", zip_path.display(), subdir));
-        let header = apply_open_state(header, &node_key, tree_state);
+        let header = apply_open_state(header, &node_key, ctx.tree_state);
         let response = header.show(ui, |ui| {
-                show_zip_entries(
-                    ui, zip_path, entries, subdir,
-                    selection, current, browser, images, data, tree_state,
-                );
-            });
+            show_zip_entries(ui, zip_path, entries, subdir, ctx, data);
+        });
 
-        track_expansion(response.openness, &node_key, tree_state);
+        track_expansion(response.openness, &node_key, ctx.tree_state);
     }
 
     for file_entry in &files {
@@ -368,7 +359,7 @@ fn show_zip_entries(
             entry: file_entry.clone(),
         };
 
-        let is_selected = selection.selected_path.as_ref() == Some(&file_ref);
+        let is_selected = ctx.selection.selected_path.as_ref() == Some(&file_ref);
 
         let icon = if is_image { "\u{1F5BC}" } else { "\u{1F4C4}" };
         let label_text = format!("  {icon} {file_name}");
@@ -383,7 +374,7 @@ fn show_zip_entries(
 
         let response = ui.selectable_label(is_selected, label);
         if response.clicked() {
-            select_file(file_ref, selection, current, browser, images, data);
+            apply_selection(file_ref, ctx, data);
         }
     }
 }
@@ -392,53 +383,40 @@ fn show_zip_entries(
 // Selection handler
 // ---------------------------------------------------------------------------
 
-fn select_file(
-    file_ref: FileRef,
-    selection: &mut TreeSelection,
-    current: &mut CurrentImage,
-    browser: &mut BrowserState,
-    _images: &mut Assets<Image>,
-    data: &ManagerData,
-) {
-    apply_selection(file_ref, selection, current, browser, data);
-}
-
 fn apply_selection(
     file_ref: FileRef,
-    selection: &mut TreeSelection,
-    current: &mut CurrentImage,
-    browser: &mut BrowserState,
+    ctx: &mut TreeContext,
     data: &ManagerData,
 ) {
     let name = file_ref.display_name();
-    selection.selected_path = Some(file_ref.clone());
+    ctx.selection.selected_path = Some(file_ref.clone());
 
     if image_loader::is_image_file(&name) {
         match image_loader::load_rgba(&file_ref) {
             Ok(rgba) => {
-                current.width = rgba.width();
-                current.height = rgba.height();
-                current.rgba = Some(rgba);
-                current.file_ref = Some(file_ref.clone());
-                browser.fit_requested = true;
+                ctx.current.width = rgba.width();
+                ctx.current.height = rgba.height();
+                ctx.current.rgba = Some(rgba);
+                ctx.current.file_ref = Some(file_ref.clone());
+                ctx.camera.fit_requested = true;
 
                 // Restore saved grid or reset
                 let key = file_ref.to_string_repr();
                 if let Some(grid) = data.grids.get(&key) {
-                    browser.cell_w = grid.cell_w;
-                    browser.cell_h = grid.cell_h;
-                    browser.grid_visible = true;
+                    ctx.grid_state.cell_w = grid.cell_w;
+                    ctx.grid_state.cell_h = grid.cell_h;
+                    ctx.grid_state.visible = true;
                 } else {
-                    browser.cell_w = 0;
-                    browser.cell_h = 0;
+                    ctx.grid_state.cell_w = 0;
+                    ctx.grid_state.cell_h = 0;
                 }
             }
             Err(e) => {
                 eprintln!("Failed to load image: {e}");
-                current.rgba = None;
-                current.width = 0;
-                current.height = 0;
-                current.file_ref = None;
+                ctx.current.rgba = None;
+                ctx.current.width = 0;
+                ctx.current.height = 0;
+                ctx.current.file_ref = None;
             }
         }
     }
@@ -452,7 +430,8 @@ pub fn file_navigation(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut selection: ResMut<TreeSelection>,
     mut current: ResMut<CurrentImage>,
-    mut browser: ResMut<BrowserState>,
+    mut camera: ResMut<CameraState>,
+    mut grid_state: ResMut<GridState>,
     manager: Res<ManagerState>,
 ) {
     let left = keyboard.just_pressed(KeyCode::ArrowLeft);
@@ -470,7 +449,6 @@ pub fn file_navigation(
         return;
     }
 
-    // Find current index in siblings
     let current_idx = siblings.iter().position(|f| f == file_ref);
     let new_idx = match current_idx {
         Some(idx) => {
@@ -482,14 +460,41 @@ pub fn file_navigation(
                 return;
             }
         }
-        None => {
-            // Not found in siblings (shouldn't happen), go to first
-            0
-        }
+        None => 0,
     };
 
     let new_ref = siblings[new_idx].clone();
-    apply_selection(new_ref, &mut selection, &mut current, &mut browser, &manager.data);
+    let name = new_ref.display_name();
+    selection.selected_path = Some(new_ref.clone());
+
+    if image_loader::is_image_file(&name) {
+        match image_loader::load_rgba(&new_ref) {
+            Ok(rgba) => {
+                current.width = rgba.width();
+                current.height = rgba.height();
+                current.rgba = Some(rgba);
+                current.file_ref = Some(new_ref.clone());
+                camera.fit_requested = true;
+
+                let key = new_ref.to_string_repr();
+                if let Some(grid) = manager.data.grids.get(&key) {
+                    grid_state.cell_w = grid.cell_w;
+                    grid_state.cell_h = grid.cell_h;
+                    grid_state.visible = true;
+                } else {
+                    grid_state.cell_w = 0;
+                    grid_state.cell_h = 0;
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to load image: {e}");
+                current.rgba = None;
+                current.width = 0;
+                current.height = 0;
+                current.file_ref = None;
+            }
+        }
+    }
 }
 
 /// List sibling files (sorted) for the given FileRef.
@@ -511,7 +516,6 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
             files.into_iter().map(FileRef::Disk).collect()
         }
         FileRef::ZipEntry { zip_path, entry } => {
-            // Get the "directory" prefix within the zip
             let prefix = match entry.rfind('/') {
                 Some(idx) => &entry[..=idx],
                 None => "",
@@ -531,7 +535,6 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
                     if name.ends_with('/') {
                         continue;
                     }
-                    // Check same directory level
                     let suffix = if prefix.is_empty() {
                         name.as_str()
                     } else if let Some(s) = name.strip_prefix(prefix) {
@@ -539,7 +542,6 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
                     } else {
                         continue;
                     };
-                    // Only direct children (no further slashes)
                     if !suffix.contains('/') {
                         files.push(name);
                     }
@@ -561,7 +563,6 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Apply `.open(Some(true))` if this node is in the force-open set, otherwise use `default_open`.
 fn apply_open_state(
     header: egui::CollapsingHeader,
     node_key: &str,
@@ -574,8 +575,6 @@ fn apply_open_state(
     }
 }
 
-/// Track whether a collapsing header is open or closed.
-/// `openness` is 0.0 (collapsed) to 1.0 (open), animated.
 fn track_expansion(openness: f32, node_key: &str, tree_state: &mut TreeState) {
     let was_open = tree_state.expanded.contains(node_key);
     let is_open = openness > 0.5;
@@ -590,22 +589,17 @@ fn track_expansion(openness: f32, node_key: &str, tree_state: &mut TreeState) {
     }
 }
 
-/// Extract the last path component as a display name for bookmarks.
 fn short_name(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
-/// Expand all ancestor directories so the target path is visible in the tree.
-/// Populates both `expanded` (for persistence) and `force_open` (to override egui state).
 fn expand_path_ancestors(path: &str, tree_state: &mut TreeState) {
     let normalized = path.replace('\\', "/");
-    // Build all ancestor keys: D:/, D:/foo, D:/foo/bar, ...
     let parts: Vec<&str> = normalized.split('/').collect();
     let mut ancestor = String::new();
     for (i, part) in parts.iter().enumerate() {
         if i == 0 {
-            // Drive letter on Windows (e.g. "D:") or empty for unix root
             ancestor = format!("{part}/");
         } else if part.is_empty() {
             continue;

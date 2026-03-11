@@ -8,6 +8,29 @@ use crate::ui_persist::PersistedUiState;
 use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
+// Shared constants
+// ---------------------------------------------------------------------------
+
+pub const MIN_ZOOM: f32 = 0.1;
+pub const MAX_ZOOM: f32 = 50.0;
+pub const LEFT_PANEL_WIDTH: f32 = 280.0;
+pub const RIGHT_PANEL_WIDTH: f32 = 320.0;
+pub const FIT_MARGIN: f32 = 32.0;
+pub const STATUS_BAR_HEIGHT: f32 = 28.0;
+pub const SCROLL_SETTLE_SECS: f32 = 0.5;
+pub const TILE_INSET: f32 = 0.1;
+
+// ---------------------------------------------------------------------------
+// Egui pointer ownership
+// ---------------------------------------------------------------------------
+
+/// Set each frame by the egui pass — true when the mouse is over a UI panel.
+#[derive(Resource, Default)]
+pub struct EguiPointerState {
+    pub over_ui: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Data directory
 // ---------------------------------------------------------------------------
 
@@ -82,24 +105,20 @@ impl TreeState {
 }
 
 // ---------------------------------------------------------------------------
-// Browser / viewport state
+// Camera state (zoom, pan, drag)
 // ---------------------------------------------------------------------------
 
 #[derive(Resource)]
-pub struct BrowserState {
+pub struct CameraState {
     pub zoom: f32,
     pub pan: Vec2,
     pub dragging: bool,
     pub last_cursor: Option<Vec2>,
     pub snap_zoom: bool,
-    pub grid_visible: bool,
-    pub cell_w: u32,
-    pub cell_h: u32,
-    pub tile_preview: bool,
     pub fit_requested: bool,
 }
 
-impl Default for BrowserState {
+impl Default for CameraState {
     fn default() -> Self {
         Self {
             zoom: 1.0,
@@ -107,13 +126,29 @@ impl Default for BrowserState {
             dragging: false,
             last_cursor: None,
             snap_zoom: false,
-            grid_visible: false,
-            cell_w: 0,
-            cell_h: 0,
-            tile_preview: false,
             fit_requested: true,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Grid overlay state
+// ---------------------------------------------------------------------------
+
+#[derive(Resource, Default)]
+pub struct GridState {
+    pub visible: bool,
+    pub cell_w: u32,
+    pub cell_h: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Tile preview state
+// ---------------------------------------------------------------------------
+
+#[derive(Resource, Default)]
+pub struct TileState {
+    pub enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,9 +178,6 @@ pub enum Tab {
 #[derive(Resource)]
 pub struct UiState {
     pub active_tab: Tab,
-    pub bundle_edit: Option<String>,
-    pub new_bundle_name: String,
-    pub new_dest_path: String,
     pub status_message: Option<(String, f64)>,
 }
 
@@ -153,9 +185,6 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             active_tab: Tab::Browse,
-            bundle_edit: None,
-            new_bundle_name: String::new(),
-            new_dest_path: String::new(),
             status_message: None,
         }
     }

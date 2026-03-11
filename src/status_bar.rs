@@ -7,7 +7,9 @@ use crate::resources::*;
 
 pub fn status_bar_ui(
     mut contexts: EguiContexts,
-    mut browser: ResMut<BrowserState>,
+    mut camera: ResMut<CameraState>,
+    grid_state: Res<GridState>,
+    tile_state: Res<TileState>,
     current: Res<CurrentImage>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -18,13 +20,15 @@ pub fn status_bar_ui(
         ui.horizontal(|ui| {
             // Zoom slider (logarithmic for smooth feel across range)
             ui.label("Zoom:");
-            let mut zoom_pct = browser.zoom * 100.0;
-            let slider = egui::Slider::new(&mut zoom_pct, 10.0..=5000.0)
+            let mut zoom_pct = camera.zoom * 100.0;
+            let min_pct = MIN_ZOOM * 100.0;
+            let max_pct = MAX_ZOOM * 100.0;
+            let slider = egui::Slider::new(&mut zoom_pct, min_pct..=max_pct)
                 .logarithmic(true)
                 .suffix("%")
                 .max_decimals(0);
             if ui.add(slider).changed() {
-                browser.zoom = zoom_pct / 100.0;
+                camera.zoom = zoom_pct / 100.0;
             }
 
             ui.separator();
@@ -42,11 +46,11 @@ pub fn status_bar_ui(
             ui.separator();
 
             // Grid info
-            if browser.grid_visible && browser.cell_w > 0 && browser.cell_h > 0 {
-                ui.label(format!("Grid: {}x{}", browser.cell_w, browser.cell_h));
+            if grid_state.visible && grid_state.cell_w > 0 && grid_state.cell_h > 0 {
+                ui.label(format!("Grid: {}x{}", grid_state.cell_w, grid_state.cell_h));
             }
 
-            if browser.tile_preview {
+            if tile_state.enabled {
                 ui.label("| Tiling");
             }
         });

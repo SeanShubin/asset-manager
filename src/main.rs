@@ -7,6 +7,7 @@
 mod data;
 mod detail_panel;
 mod export;
+mod grid;
 mod image_loader;
 mod resources;
 mod status_bar;
@@ -55,12 +56,15 @@ fn main() {
         _ => Tab::Browse,
     };
 
-    let browser = BrowserState {
-        zoom: ui_state_persisted.zoom.clamp(0.1, 50.0),
+    let camera_state = CameraState {
+        zoom: ui_state_persisted.zoom.clamp(MIN_ZOOM, MAX_ZOOM),
         snap_zoom: ui_state_persisted.snap_zoom,
-        tile_preview: ui_state_persisted.tile_preview,
         fit_requested: true,
         ..Default::default()
+    };
+
+    let tile_state = TileState {
+        enabled: ui_state_persisted.tile_preview,
     };
 
     App::new()
@@ -74,7 +78,9 @@ fn main() {
             dirty: false,
         })
         .insert_resource(selection)
-        .insert_resource(browser)
+        .insert_resource(camera_state)
+        .init_resource::<GridState>()
+        .insert_resource(tile_state)
         .insert_resource(tree_state)
         .init_resource::<CurrentImage>()
         .insert_resource(UiState {
@@ -98,22 +104,37 @@ fn main() {
             )
                 .chain(),
         )
+        .init_resource::<EguiPointerState>()
         .add_systems(
             EguiPrimaryContextPass,
             (
                 tree_panel::tree_panel_ui,
                 detail_panel::detail_panel_ui,
                 status_bar::status_bar_ui,
-            ),
+                update_egui_pointer_state,
+            )
+                .chain(),
         )
         .run();
+}
+
+/// Track whether egui wants the pointer (mouse is over a UI panel).
+fn update_egui_pointer_state(
+    mut contexts: bevy_egui::EguiContexts,
+    mut pointer_state: ResMut<EguiPointerState>,
+) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    pointer_state.over_ui = ctx.is_pointer_over_area();
 }
 
 /// On startup, if a selected path was restored, load its image.
 fn restore_selected_image(
     selection: Res<TreeSelection>,
     mut current: ResMut<CurrentImage>,
-    mut browser: ResMut<BrowserState>,
+    mut camera: ResMut<CameraState>,
+    mut grid_state: ResMut<GridState>,
     manager: Res<ManagerState>,
 ) {
     let Some(ref file_ref) = selection.selected_path else {
@@ -131,14 +152,14 @@ fn restore_selected_image(
             current.height = rgba.height();
             current.rgba = Some(rgba);
             current.file_ref = Some(file_ref.clone());
-            browser.fit_requested = true;
+            camera.fit_requested = true;
 
             // Restore saved grid
             let key = file_ref.to_string_repr();
             if let Some(grid) = manager.data.grids.get(&key) {
-                browser.cell_w = grid.cell_w;
-                browser.cell_h = grid.cell_h;
-                browser.grid_visible = true;
+                grid_state.cell_w = grid.cell_w;
+                grid_state.cell_h = grid.cell_h;
+                grid_state.visible = true;
             }
         }
         Err(e) => {
@@ -148,13 +169,14 @@ fn restore_selected_image(
 }
 
 /// Save UI state on discrete user actions (expand/collapse, select, tab switch)
-/// and after scroll settles (debounced 0.5s).
+/// and after scroll settles (debounced).
 fn save_ui_on_change(
     time: Res<Time>,
     data_dir: Res<DataDir>,
     mut tree_state: ResMut<TreeState>,
     selection: Res<TreeSelection>,
-    browser: Res<BrowserState>,
+    camera: Res<CameraState>,
+    tile_state: Res<TileState>,
     ui_state: Res<UiState>,
 ) {
     // Tick down scroll settle timer
@@ -191,9 +213,9 @@ fn save_ui_on_change(
             .as_ref()
             .map(|f| f.to_string_repr()),
         active_tab: tab_str.to_string(),
-        zoom: browser.zoom,
-        snap_zoom: browser.snap_zoom,
-        tile_preview: browser.tile_preview,
+        zoom: camera.zoom,
+        snap_zoom: camera.snap_zoom,
+        tile_preview: tile_state.enabled,
     };
 
     ui_persist::save_ui_state(&data_dir.path, &persisted);

@@ -4,30 +4,8 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use crate::data::{self, DirRole, FileRef, GridDef};
+use crate::grid;
 use crate::resources::*;
-
-// ---------------------------------------------------------------------------
-// Grid helpers
-// ---------------------------------------------------------------------------
-
-/// All divisors of `dim` that are >= 8.
-fn valid_cell_sizes(dim: u32) -> Vec<u32> {
-    (8..=dim).filter(|&s| dim % s == 0).collect()
-}
-
-fn prev_valid_size(valid: &[u32], current: u32, dim: u32) -> u32 {
-    if valid.is_empty() {
-        return (8..current).rev().find(|&d| dim % d == 0).unwrap_or(current);
-    }
-    valid.iter().copied().rev().find(|&s| s < current).unwrap_or(current)
-}
-
-fn next_valid_size(valid: &[u32], current: u32, dim: u32) -> u32 {
-    if valid.is_empty() {
-        return ((current + 1)..=dim).find(|&d| d >= 8 && dim % d == 0).unwrap_or(current);
-    }
-    valid.iter().copied().find(|&s| s > current).unwrap_or(current)
-}
 
 // ---------------------------------------------------------------------------
 // System
@@ -37,7 +15,9 @@ pub fn detail_panel_ui(
     mut contexts: EguiContexts,
     selection: Res<TreeSelection>,
     current: Res<CurrentImage>,
-    mut browser: ResMut<BrowserState>,
+    mut camera: ResMut<CameraState>,
+    mut grid_state: ResMut<GridState>,
+    mut tile_state: ResMut<TileState>,
     mut manager: ResMut<ManagerState>,
     mut ui_state: ResMut<UiState>,
     data_dir: Res<DataDir>,
@@ -56,7 +36,7 @@ pub fn detail_panel_ui(
     }
 
     egui::SidePanel::right("detail_panel")
-        .default_width(320.0)
+        .default_width(RIGHT_PANEL_WIDTH)
         .show(ctx, |ui| {
             // Tab bar
             ui.horizontal(|ui| {
@@ -74,7 +54,7 @@ pub fn detail_panel_ui(
 
             match ui_state.active_tab {
                 Tab::Browse => show_browse_tab(ui, &selection, &current, &mut manager, &data_dir, &mut ui_state),
-                Tab::Grid => show_grid_tab(ui, &current, &mut browser, &mut manager, &data_dir, &mut ui_state),
+                Tab::Grid => show_grid_tab(ui, &current, &mut camera, &mut grid_state, &mut tile_state, &mut manager, &data_dir, &mut ui_state),
                 Tab::Bundles => show_bundles_tab(ui),
             }
         });
@@ -153,7 +133,6 @@ fn show_browse_tab(
                     }
                 }
                 DirRole::None => {
-                    // Show available designation buttons based on hierarchy
                     if ui.button("Mark as Asset Root").clicked() {
                         manager.data.asset_roots.insert(normalized.clone());
                         manager.dirty = true;
@@ -201,9 +180,9 @@ fn show_browse_tab(
 
     // Grid info for selected file
     let grid_key = file_ref.to_string_repr();
-    if let Some(grid) = manager.data.grids.get(&grid_key) {
+    if let Some(saved_grid) = manager.data.grids.get(&grid_key) {
         ui.separator();
-        ui.label(format!("Grid: {}x{} cells", grid.cell_w, grid.cell_h));
+        ui.label(format!("Grid: {}x{} cells", saved_grid.cell_w, saved_grid.cell_h));
     }
 
     // Tags
@@ -253,7 +232,9 @@ fn show_browse_tab(
 fn show_grid_tab(
     ui: &mut egui::Ui,
     current: &CurrentImage,
-    browser: &mut BrowserState,
+    camera: &mut CameraState,
+    grid_state: &mut GridState,
+    tile_state: &mut TileState,
     manager: &mut ManagerState,
     data_dir: &DataDir,
     ui_state: &mut UiState,
@@ -265,7 +246,6 @@ fn show_grid_tab(
         return;
     }
 
-    // File name
     if let Some(ref file_ref) = current.file_ref {
         ui.label(egui::RichText::new(file_ref.display_name()).strong());
     }
@@ -273,26 +253,25 @@ fn show_grid_tab(
 
     ui.separator();
 
-    // Initialize cell size if not set
-    if browser.cell_w == 0 {
-        browser.cell_w = current.width;
+    if grid_state.cell_w == 0 {
+        grid_state.cell_w = current.width;
     }
-    if browser.cell_h == 0 {
-        browser.cell_h = current.height;
+    if grid_state.cell_h == 0 {
+        grid_state.cell_h = current.height;
     }
 
-    let valid_w = valid_cell_sizes(current.width);
-    let valid_h = valid_cell_sizes(current.height);
+    let valid_w = grid::valid_cell_sizes(current.width);
+    let valid_h = grid::valid_cell_sizes(current.height);
 
     // Cell width controls
     ui.horizontal(|ui| {
         ui.label("Width:");
         if ui.small_button("-").clicked() {
-            browser.cell_w = prev_valid_size(&valid_w, browser.cell_w, current.width);
+            grid_state.cell_w = grid::prev_valid_size(&valid_w, grid_state.cell_w, current.width);
         }
-        ui.monospace(format!("{}", browser.cell_w));
+        ui.monospace(format!("{}", grid_state.cell_w));
         if ui.small_button("+").clicked() {
-            browser.cell_w = next_valid_size(&valid_w, browser.cell_w, current.width);
+            grid_state.cell_w = grid::next_valid_size(&valid_w, grid_state.cell_w, current.width);
         }
         ui.label("px");
     });
@@ -301,46 +280,45 @@ fn show_grid_tab(
     ui.horizontal(|ui| {
         ui.label("Height:");
         if ui.small_button("-").clicked() {
-            browser.cell_h = prev_valid_size(&valid_h, browser.cell_h, current.height);
+            grid_state.cell_h = grid::prev_valid_size(&valid_h, grid_state.cell_h, current.height);
         }
-        ui.monospace(format!("{}", browser.cell_h));
+        ui.monospace(format!("{}", grid_state.cell_h));
         if ui.small_button("+").clicked() {
-            browser.cell_h = next_valid_size(&valid_h, browser.cell_h, current.height);
+            grid_state.cell_h = grid::next_valid_size(&valid_h, grid_state.cell_h, current.height);
         }
         ui.label("px");
     });
 
     // Grid info
-    if browser.cell_w > 0 && browser.cell_h > 0
-        && current.width % browser.cell_w == 0
-        && current.height % browser.cell_h == 0
+    if grid_state.cell_w > 0 && grid_state.cell_h > 0
+        && current.width % grid_state.cell_w == 0
+        && current.height % grid_state.cell_h == 0
     {
-        let cols = current.width / browser.cell_w;
-        let rows = current.height / browser.cell_h;
+        let cols = current.width / grid_state.cell_w;
+        let rows = current.height / grid_state.cell_h;
         ui.label(format!("{cols} cols x {rows} rows"));
     }
 
     ui.separator();
 
     // Grid visibility toggle
-    ui.checkbox(&mut browser.grid_visible, "Show grid (G)");
+    ui.checkbox(&mut grid_state.visible, "Show grid (G)");
 
     // Apply / Clear grid buttons
     ui.horizontal(|ui| {
         if ui.button("Apply Grid").clicked() {
             if let Some(ref file_ref) = current.file_ref {
                 let key = file_ref.to_string_repr();
-                eprintln!("Apply grid: key={key} cell={}x{}", browser.cell_w, browser.cell_h);
                 manager.data.grids.insert(key, GridDef {
-                    cell_w: browser.cell_w,
-                    cell_h: browser.cell_h,
+                    cell_w: grid_state.cell_w,
+                    cell_h: grid_state.cell_h,
                 });
                 manager.dirty = true;
                 match data::save_data(&data_dir.path, &manager.data) {
                     Ok(()) => {
                         manager.dirty = false;
                         ui_state.status_message = Some((
-                            format!("Grid applied: {}x{}", browser.cell_w, browser.cell_h),
+                            format!("Grid applied: {}x{}", grid_state.cell_w, grid_state.cell_h),
                             3.0,
                         ));
                     }
@@ -375,10 +353,10 @@ fn show_grid_tab(
     // Saved grid indicator
     if let Some(ref file_ref) = current.file_ref {
         let key = file_ref.to_string_repr();
-        if let Some(grid) = manager.data.grids.get(&key) {
+        if let Some(saved_grid) = manager.data.grids.get(&key) {
             ui.colored_label(
                 egui::Color32::from_rgb(100, 200, 100),
-                format!("Saved: {}x{}", grid.cell_w, grid.cell_h),
+                format!("Saved: {}x{}", saved_grid.cell_w, saved_grid.cell_h),
             );
         }
     }
@@ -386,12 +364,12 @@ fn show_grid_tab(
     ui.separator();
 
     // Snap zoom
-    ui.checkbox(&mut browser.snap_zoom, "Snap zoom to integers");
+    ui.checkbox(&mut camera.snap_zoom, "Snap zoom to integers");
 
     ui.separator();
 
     // Tile preview
-    ui.checkbox(&mut browser.tile_preview, "Tile preview");
+    ui.checkbox(&mut tile_state.enabled, "Tile preview");
 }
 
 // ---------------------------------------------------------------------------

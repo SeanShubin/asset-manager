@@ -5,12 +5,12 @@ use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::grid;
 use crate::image_loader;
 use crate::resources::*;
 
-const MIN_ZOOM: f32 = 0.1;
-const MAX_ZOOM: f32 = 50.0;
 const GRID_COLOR: Color = Color::srgba(1.0, 1.0, 0.0, 0.4);
+const ZOOM_FACTOR: f32 = 1.15;
 
 // ---------------------------------------------------------------------------
 // Components
@@ -45,7 +45,6 @@ pub fn update_preview_sprite(
         return;
     }
 
-    // Despawn old preview
     for entity in &existing {
         commands.entity(entity).despawn();
     }
@@ -53,7 +52,6 @@ pub fn update_preview_sprite(
         commands.entity(entity).despawn();
     }
 
-    // Spawn new preview if we have an image
     if let Some(ref rgba) = current.rgba {
         let handle = image_loader::rgba_to_bevy_handle(rgba, &mut images);
         commands.spawn((PreviewSprite, Sprite::from_image(handle), NoFrustumCulling));
@@ -69,51 +67,51 @@ pub fn pan_zoom(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut scroll_events: MessageReader<MouseWheel>,
-    mut browser: ResMut<BrowserState>,
+    mut camera: ResMut<CameraState>,
+    pointer: Res<EguiPointerState>,
 ) {
-    // Reset
+    // Keyboard shortcuts always work regardless of pointer location
     if keyboard.just_pressed(KeyCode::Home) || keyboard.just_pressed(KeyCode::KeyR) {
-        browser.fit_requested = true;
-        browser.pan = Vec2::ZERO;
+        camera.fit_requested = true;
+        camera.pan = Vec2::ZERO;
     }
 
-    // Zoom via scroll wheel — proportional scaling for smooth feel
-    for ev in scroll_events.read() {
-        if ev.y == 0.0 {
-            continue;
+    // Mouse interactions only when pointer is over the preview area (not egui panels)
+    if !pointer.over_ui {
+        for ev in scroll_events.read() {
+            if ev.y == 0.0 {
+                continue;
+            }
+            if ev.y > 0.0 {
+                camera.zoom *= ZOOM_FACTOR;
+            } else {
+                camera.zoom /= ZOOM_FACTOR;
+            }
+            camera.zoom = camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+            if camera.snap_zoom {
+                camera.zoom = camera.zoom.round().max(1.0);
+            }
         }
-        // Multiply/divide by a fixed factor for consistent feel at all zoom levels
-        let factor = 1.15_f32;
-        if ev.y > 0.0 {
-            browser.zoom *= factor;
-        } else {
-            browser.zoom /= factor;
-        }
-        browser.zoom = browser.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-        if browser.snap_zoom {
-            browser.zoom = browser.zoom.round().max(1.0);
+
+        if mouse_buttons.just_pressed(MouseButton::Left) {
+            camera.dragging = true;
+            camera.last_cursor = windows.single().ok().and_then(|w| w.cursor_position());
         }
     }
 
-    // Pan via left-click drag
-    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
-
-    if mouse_buttons.just_pressed(MouseButton::Left) {
-        browser.dragging = true;
-        browser.last_cursor = cursor;
-    }
     if mouse_buttons.just_released(MouseButton::Left) {
-        browser.dragging = false;
-        browser.last_cursor = None;
+        camera.dragging = false;
+        camera.last_cursor = None;
     }
 
-    if browser.dragging {
-        if let (Some(current), Some(last)) = (cursor, browser.last_cursor) {
+    if camera.dragging {
+        let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+        if let (Some(current), Some(last)) = (cursor, camera.last_cursor) {
             let delta = current - last;
-            let zoom = browser.zoom;
-            browser.pan += Vec2::new(delta.x, -delta.y) / zoom;
+            let zoom = camera.zoom;
+            camera.pan += Vec2::new(delta.x, -delta.y) / zoom;
         }
-        browser.last_cursor = cursor;
+        camera.last_cursor = cursor;
     }
 }
 
@@ -121,16 +119,12 @@ pub fn pan_zoom(
 // Auto-fit zoom
 // ---------------------------------------------------------------------------
 
-const LEFT_PANEL_WIDTH: f32 = 280.0;
-const RIGHT_PANEL_WIDTH: f32 = 320.0;
-const FIT_MARGIN: f32 = 32.0;
-
 pub fn auto_fit_zoom(
-    mut browser: ResMut<BrowserState>,
+    mut camera_state: ResMut<CameraState>,
     current: Res<CurrentImage>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    if !browser.fit_requested {
+    if !camera_state.fit_requested {
         return;
     }
 
@@ -139,19 +133,19 @@ pub fn auto_fit_zoom(
     };
 
     if current.width == 0 || current.height == 0 {
-        browser.fit_requested = false;
+        camera_state.fit_requested = false;
         return;
     }
 
     let viewport_w = (window.width() - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH - FIT_MARGIN).max(1.0);
-    let viewport_h = (window.height() - FIT_MARGIN).max(1.0);
+    let viewport_h = (window.height() - STATUS_BAR_HEIGHT - FIT_MARGIN).max(1.0);
     let img_w = current.width as f32;
     let img_h = current.height as f32;
 
     let zoom = (viewport_w / img_w).min(viewport_h / img_h);
-    browser.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-    browser.pan = Vec2::ZERO;
-    browser.fit_requested = false;
+    camera_state.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    camera_state.pan = Vec2::ZERO;
+    camera_state.fit_requested = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,13 +153,13 @@ pub fn auto_fit_zoom(
 // ---------------------------------------------------------------------------
 
 pub fn apply_camera(
-    browser: Res<BrowserState>,
+    camera: Res<CameraState>,
     mut camera_q: Query<&mut Transform, With<Camera2d>>,
 ) {
     for mut tf in &mut camera_q {
-        tf.translation.x = -browser.pan.x;
-        tf.translation.y = -browser.pan.y;
-        let safe_zoom = browser.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        tf.translation.x = -camera.pan.x;
+        tf.translation.y = -camera.pan.y;
+        let safe_zoom = camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         tf.scale = Vec3::splat(1.0 / safe_zoom);
     }
 }
@@ -174,72 +168,49 @@ pub fn apply_camera(
 // Keyboard shortcuts for grid
 // ---------------------------------------------------------------------------
 
-/// All divisors of `dim` that are >= 8.
-fn valid_cell_sizes(dim: u32) -> Vec<u32> {
-    (8..=dim).filter(|&s| dim % s == 0).collect()
-}
-
-fn prev_valid_size(valid: &[u32], current: u32, dim: u32) -> u32 {
-    if valid.is_empty() {
-        return (8..current).rev().find(|&d| dim % d == 0).unwrap_or(current);
-    }
-    valid.iter().copied().rev().find(|&s| s < current).unwrap_or(current)
-}
-
-fn next_valid_size(valid: &[u32], current: u32, dim: u32) -> u32 {
-    if valid.is_empty() {
-        return ((current + 1)..=dim).find(|&d| d >= 8 && dim % d == 0).unwrap_or(current);
-    }
-    valid.iter().copied().find(|&s| s > current).unwrap_or(current)
-}
-
 pub fn grid_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
     current: Res<CurrentImage>,
-    mut browser: ResMut<BrowserState>,
+    mut grid_state: ResMut<GridState>,
 ) {
-    // G — toggle grid
     if keyboard.just_pressed(KeyCode::KeyG) {
-        browser.grid_visible = !browser.grid_visible;
+        grid_state.visible = !grid_state.visible;
     }
 
     if current.width == 0 || current.height == 0 {
         return;
     }
 
-    // Initialize cell size if needed
-    if browser.cell_w == 0 {
-        browser.cell_w = current.width;
+    if grid_state.cell_w == 0 {
+        grid_state.cell_w = current.width;
     }
-    if browser.cell_h == 0 {
-        browser.cell_h = current.height;
+    if grid_state.cell_h == 0 {
+        grid_state.cell_h = current.height;
     }
 
-    let valid_w = valid_cell_sizes(current.width);
-    let valid_h = valid_cell_sizes(current.height);
+    let valid_w = grid::valid_cell_sizes(current.width);
+    let valid_h = grid::valid_cell_sizes(current.height);
 
     let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     let adjust_w = ctrl || !shift;
     let adjust_h = shift || !ctrl;
 
-    // Minus — smaller cells (more divisions)
     if keyboard.just_pressed(KeyCode::Minus) || keyboard.just_pressed(KeyCode::NumpadSubtract) {
         if adjust_w {
-            browser.cell_w = prev_valid_size(&valid_w, browser.cell_w, current.width);
+            grid_state.cell_w = grid::prev_valid_size(&valid_w, grid_state.cell_w, current.width);
         }
         if adjust_h {
-            browser.cell_h = prev_valid_size(&valid_h, browser.cell_h, current.height);
+            grid_state.cell_h = grid::prev_valid_size(&valid_h, grid_state.cell_h, current.height);
         }
     }
 
-    // Plus — larger cells (fewer divisions)
     if keyboard.just_pressed(KeyCode::Equal) || keyboard.just_pressed(KeyCode::NumpadAdd) {
         if adjust_w {
-            browser.cell_w = next_valid_size(&valid_w, browser.cell_w, current.width);
+            grid_state.cell_w = grid::next_valid_size(&valid_w, grid_state.cell_w, current.width);
         }
         if adjust_h {
-            browser.cell_h = next_valid_size(&valid_h, browser.cell_h, current.height);
+            grid_state.cell_h = grid::next_valid_size(&valid_h, grid_state.cell_h, current.height);
         }
     }
 }
@@ -249,16 +220,16 @@ pub fn grid_keyboard(
 // ---------------------------------------------------------------------------
 
 pub fn draw_grid(
-    browser: Res<BrowserState>,
+    grid_state: Res<GridState>,
     current: Res<CurrentImage>,
     mut gizmos: Gizmos,
 ) {
-    if !browser.grid_visible {
+    if !grid_state.visible {
         return;
     }
 
-    let cw = browser.cell_w as f32;
-    let ch = browser.cell_h as f32;
+    let cw = grid_state.cell_w as f32;
+    let ch = grid_state.cell_h as f32;
     if cw == 0.0 || ch == 0.0 {
         return;
     }
@@ -290,24 +261,23 @@ pub fn draw_grid(
 
 pub fn update_tile_preview(
     mut commands: Commands,
-    browser: Res<BrowserState>,
+    camera_state: Res<CameraState>,
+    tile_state: Res<TileState>,
     current: Res<CurrentImage>,
     mut images: ResMut<Assets<Image>>,
     existing_tiles: Query<Entity, With<TileSprite>>,
     preview_sprite: Query<&Sprite, With<PreviewSprite>>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    // Only rebuild when state changes
-    if !browser.is_changed() && !current.is_changed() {
+    if !camera_state.is_changed() && !tile_state.is_changed() && !current.is_changed() {
         return;
     }
 
-    // Despawn old tiles
     for entity in &existing_tiles {
         commands.entity(entity).despawn();
     }
 
-    if !browser.tile_preview {
+    if !tile_state.enabled {
         return;
     }
 
@@ -331,23 +301,21 @@ pub fn update_tile_preview(
 
     let handle = image_loader::rgba_to_bevy_handle(rgba, &mut images);
 
-    // Auto-calculate tile count from visible viewport area
-    let safe_zoom = browser.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-    let world_w = window.width() / safe_zoom;
-    let world_h = window.height() / safe_zoom;
-    // Extra +2 so tiles cover edges during panning
+    // Use visible viewport area (window minus panels) for tile count
+    let safe_zoom = camera_state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    let view_w = (window.width() - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH).max(1.0);
+    let view_h = (window.height() - STATUS_BAR_HEIGHT).max(1.0);
+    let world_w = view_w / safe_zoom;
+    let world_h = view_h / safe_zoom;
     let cols = ((world_w / w).ceil() as i32 + 2).max(3);
     let rows = ((world_h / h).ceil() as i32 + 2).max(3);
 
-    // Inset 0.1px on the texture rect to prevent sub-pixel gridline bleeding
-    let inset = 0.1;
-    let rect = bevy::math::Rect::new(inset, inset, w - inset, h - inset);
+    let rect = bevy::math::Rect::new(TILE_INSET, TILE_INSET, w - TILE_INSET, h - TILE_INSET);
 
-    // Center tile is the main sprite at (0,0); spawn surrounding tiles
     for row in 0..rows {
         for col in 0..cols {
             if row == rows / 2 && col == cols / 2 {
-                continue; // skip center — that's the main preview sprite
+                continue;
             }
             let offset_x = (col - cols / 2) as f32 * w;
             let offset_y = -(row - rows / 2) as f32 * h;
@@ -371,7 +339,7 @@ pub fn update_tile_preview(
 // ---------------------------------------------------------------------------
 
 pub fn update_window_title(
-    browser: Res<BrowserState>,
+    camera: Res<CameraState>,
     current: Res<CurrentImage>,
     mut windows: Query<&mut Window>,
 ) {
@@ -379,7 +347,7 @@ pub fn update_window_title(
         return;
     };
 
-    let zoom_pct = (browser.zoom * 100.0).round() as i32;
+    let zoom_pct = (camera.zoom * 100.0).round() as i32;
 
     let title = if let Some(ref file_ref) = current.file_ref {
         let name = file_ref.display_name();
