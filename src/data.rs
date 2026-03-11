@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 pub enum FileRef {
     Disk(PathBuf),
     ZipEntry { zip_path: PathBuf, entry: String },
+    NestedZipEntry {
+        outer_zip: PathBuf,
+        inner_entry: String,
+        entry: String,
+    },
 }
 
 const ZIP_SEPARATOR: &str = "//";
@@ -31,35 +36,58 @@ impl FileRef {
                     entry
                 )
             }
+            FileRef::NestedZipEntry {
+                outer_zip,
+                inner_entry,
+                entry,
+            } => {
+                format!(
+                    "{}{}{}{}{}",
+                    outer_zip.to_string_lossy().replace('\\', "/"),
+                    ZIP_SEPARATOR,
+                    inner_entry,
+                    ZIP_SEPARATOR,
+                    entry
+                )
+            }
         }
     }
 
     pub fn from_string(s: &str) -> Self {
-        if let Some(idx) = s.find(ZIP_SEPARATOR) {
-            FileRef::ZipEntry {
-                zip_path: PathBuf::from(&s[..idx]),
-                entry: s[idx + ZIP_SEPARATOR.len()..].to_string(),
-            }
-        } else {
-            FileRef::Disk(PathBuf::from(s))
+        // Split on "//" — 1 segment = disk, 2 = zip entry, 3+ = nested zip
+        let segments: Vec<&str> = s.split(ZIP_SEPARATOR).collect();
+        match segments.len() {
+            1 => FileRef::Disk(PathBuf::from(segments[0])),
+            2 => FileRef::ZipEntry {
+                zip_path: PathBuf::from(segments[0]),
+                entry: segments[1].to_string(),
+            },
+            _ => FileRef::NestedZipEntry {
+                outer_zip: PathBuf::from(segments[0]),
+                inner_entry: segments[1].to_string(),
+                // Join remaining segments back with "//" for deeper nesting
+                entry: segments[2..].join(ZIP_SEPARATOR),
+            },
         }
     }
 
     pub fn display_name(&self) -> String {
-        match self {
-            FileRef::Disk(p) => p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?")
-                .to_string(),
-            FileRef::ZipEntry { entry, .. } => {
-                Path::new(entry)
+        let name_str = match self {
+            FileRef::Disk(p) => {
+                return p
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?")
-                    .to_string()
+                    .to_string();
             }
-        }
+            FileRef::ZipEntry { entry, .. } => entry.as_str(),
+            FileRef::NestedZipEntry { entry, .. } => entry.as_str(),
+        };
+        Path::new(name_str)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string()
     }
 }
 

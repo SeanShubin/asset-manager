@@ -353,9 +353,163 @@ fn show_zip_entries(
 
     for file_entry in &files {
         let file_name = file_entry.rsplit('/').next().unwrap_or(file_entry);
+        let is_zip = file_name.to_ascii_lowercase().ends_with(".zip");
         let is_image = image_loader::is_image_file(file_name);
-        let file_ref = FileRef::ZipEntry {
-            zip_path: zip_path.to_path_buf(),
+
+        if is_zip {
+            // Nested zip — render as expandable
+            let zip_label = egui::RichText::new(format!("  \u{1F4E6} {file_name}"))
+                .color(egui::Color32::from_rgb(200, 180, 100));
+
+            let node_key = format!(
+                "{}//{}",
+                zip_path.to_string_lossy().replace('\\', "/"),
+                file_entry
+            );
+
+            let header = egui::CollapsingHeader::new(zip_label)
+                .id_salt(format!("nested_{}{}", zip_path.display(), file_entry));
+            let header = apply_open_state(header, &node_key, ctx.tree_state);
+            let response = header.show(ui, |ui| {
+                show_nested_zip_contents(ui, zip_path, file_entry, ctx, data);
+            });
+
+            track_expansion(response.openness, &node_key, ctx.tree_state);
+        } else {
+            let file_ref = FileRef::ZipEntry {
+                zip_path: zip_path.to_path_buf(),
+                entry: file_entry.clone(),
+            };
+
+            let is_selected = ctx.selection.selected_path.as_ref() == Some(&file_ref);
+
+            let icon = if is_image { "\u{1F5BC}" } else { "\u{1F4C4}" };
+            let label_text = format!("  {icon} {file_name}");
+
+            let label = if is_selected {
+                egui::RichText::new(label_text).strong().color(egui::Color32::WHITE)
+            } else if is_image {
+                egui::RichText::new(label_text).color(egui::Color32::LIGHT_BLUE)
+            } else {
+                egui::RichText::new(label_text)
+            };
+
+            let response = ui.selectable_label(is_selected, label);
+            if response.clicked() {
+                apply_selection(file_ref, ctx, data);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Nested zip contents tree
+// ---------------------------------------------------------------------------
+
+fn show_nested_zip_contents(
+    ui: &mut egui::Ui,
+    outer_zip: &Path,
+    inner_entry: &str,
+    ctx: &mut TreeContext,
+    data: &ManagerData,
+) {
+    let inner_bytes = match image_loader::read_zip_entry_bytes(outer_zip, inner_entry) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            ui.colored_label(egui::Color32::RED, format!("Cannot read inner zip: {e}"));
+            return;
+        }
+    };
+
+    let cursor = std::io::Cursor::new(inner_bytes);
+    let mut archive = match zip::ZipArchive::new(cursor) {
+        Ok(a) => a,
+        Err(e) => {
+            ui.colored_label(egui::Color32::RED, format!("Invalid inner zip: {e}"));
+            return;
+        }
+    };
+
+    let mut entries: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let name = entry.name().to_string();
+            if !name.ends_with('/') {
+                entries.push(name);
+            }
+        }
+    }
+    entries.sort();
+
+    show_nested_zip_entries(ui, outer_zip, inner_entry, &entries, "", ctx, data);
+}
+
+fn show_nested_zip_entries(
+    ui: &mut egui::Ui,
+    outer_zip: &Path,
+    inner_entry: &str,
+    entries: &[String],
+    prefix: &str,
+    ctx: &mut TreeContext,
+    data: &ManagerData,
+) {
+    let mut subdirs: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let suffix = if prefix.is_empty() {
+            entry.as_str()
+        } else if let Some(s) = entry.strip_prefix(prefix) {
+            s
+        } else {
+            continue;
+        };
+
+        if suffix.is_empty() {
+            continue;
+        }
+
+        if let Some(slash_pos) = suffix.find('/') {
+            let dir_name = &suffix[..slash_pos];
+            let full_dir = if prefix.is_empty() {
+                format!("{dir_name}/")
+            } else {
+                format!("{prefix}{dir_name}/")
+            };
+            if !subdirs.contains(&full_dir) {
+                subdirs.push(full_dir);
+            }
+        } else {
+            files.push(entry.clone());
+        }
+    }
+
+    subdirs.sort();
+
+    let outer_str = outer_zip.to_string_lossy().replace('\\', "/");
+
+    for subdir in &subdirs {
+        let display_name = subdir.trim_end_matches('/');
+        let display_name = display_name.rsplit('/').next().unwrap_or(display_name);
+
+        let node_key = format!("{outer_str}//{inner_entry}//{subdir}");
+
+        let header = egui::CollapsingHeader::new(format!("\u{1F4C1} {display_name}"))
+            .id_salt(format!("nested_{}_{}_{}",outer_str, inner_entry, subdir));
+        let header = apply_open_state(header, &node_key, ctx.tree_state);
+        let response = header.show(ui, |ui| {
+            show_nested_zip_entries(ui, outer_zip, inner_entry, entries, subdir, ctx, data);
+        });
+
+        track_expansion(response.openness, &node_key, ctx.tree_state);
+    }
+
+    for file_entry in &files {
+        let file_name = file_entry.rsplit('/').next().unwrap_or(file_entry);
+        let is_image = image_loader::is_image_file(file_name);
+        let file_ref = FileRef::NestedZipEntry {
+            outer_zip: outer_zip.to_path_buf(),
+            inner_entry: inner_entry.to_string(),
             entry: file_entry.clone(),
         };
 
@@ -552,6 +706,54 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
                 .into_iter()
                 .map(|e| FileRef::ZipEntry {
                     zip_path: zip_path.clone(),
+                    entry: e,
+                })
+                .collect()
+        }
+        FileRef::NestedZipEntry {
+            outer_zip,
+            inner_entry,
+            entry,
+        } => {
+            let prefix = match entry.rfind('/') {
+                Some(idx) => &entry[..=idx],
+                None => "",
+            };
+
+            let Ok(inner_bytes) = image_loader::read_zip_entry_bytes(outer_zip, inner_entry)
+            else {
+                return Vec::new();
+            };
+            let cursor = std::io::Cursor::new(inner_bytes);
+            let Ok(mut archive) = zip::ZipArchive::new(cursor) else {
+                return Vec::new();
+            };
+
+            let mut files: Vec<String> = Vec::new();
+            for i in 0..archive.len() {
+                if let Ok(ze) = archive.by_index(i) {
+                    let name = ze.name().to_string();
+                    if name.ends_with('/') {
+                        continue;
+                    }
+                    let suffix = if prefix.is_empty() {
+                        name.as_str()
+                    } else if let Some(s) = name.strip_prefix(prefix) {
+                        s
+                    } else {
+                        continue;
+                    };
+                    if !suffix.contains('/') {
+                        files.push(name);
+                    }
+                }
+            }
+            files.sort();
+            files
+                .into_iter()
+                .map(|e| FileRef::NestedZipEntry {
+                    outer_zip: outer_zip.clone(),
+                    inner_entry: inner_entry.clone(),
                     entry: e,
                 })
                 .collect()
