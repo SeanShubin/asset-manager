@@ -1,4 +1,4 @@
-//! Right panel: tabbed detail view (Browse / Grid / Bundles).
+//! Right panel: tabbed detail view (Browse / Bundles).
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -41,7 +41,6 @@ pub fn detail_panel_ui(
             // Tab bar
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut ui_state.active_tab, Tab::Browse, "Browse");
-                ui.selectable_value(&mut ui_state.active_tab, Tab::Grid, "Grid");
                 ui.selectable_value(&mut ui_state.active_tab, Tab::Bundles, "Bundles");
             });
             ui.separator();
@@ -53,37 +52,39 @@ pub fn detail_panel_ui(
             }
 
             match ui_state.active_tab {
-                Tab::Browse => show_browse_tab(ui, &selection, &current, &mut manager, &data_dir, &mut ui_state),
-                Tab::Grid => show_grid_tab(ui, &current, &mut camera, &mut grid_state, &mut tile_state, &mut manager, &data_dir, &mut ui_state),
+                Tab::Browse => show_browse_tab(
+                    ui, &selection, &current, &mut camera, &mut grid_state,
+                    &mut tile_state, &mut manager, &data_dir, &mut ui_state,
+                ),
                 Tab::Bundles => show_bundles_tab(ui),
             }
         });
 }
 
 // ---------------------------------------------------------------------------
-// Browse tab
+// Browse tab (combined browse + grid)
 // ---------------------------------------------------------------------------
 
 fn show_browse_tab(
     ui: &mut egui::Ui,
     selection: &TreeSelection,
     current: &CurrentImage,
+    camera: &mut CameraState,
+    grid_state: &mut GridState,
+    tile_state: &mut TileState,
     manager: &mut ManagerState,
     data_dir: &DataDir,
     ui_state: &mut UiState,
 ) {
-    ui.heading("Selected");
-
     let Some(ref file_ref) = selection.selected_path else {
         ui.label("Nothing selected. Browse the file tree on the left.");
         return;
     };
 
-    // Show path
+    // -- File info --
     let path_str = file_ref.to_string_repr();
     ui.label(egui::RichText::new(&path_str).strong().size(12.0));
 
-    // Image info
     if current.width > 0 {
         if let Some(ref info) = current.info {
             ui.label(format!(
@@ -105,146 +106,122 @@ fn show_browse_tab(
 
     ui.separator();
 
-    // Hierarchy designation (only for disk directories)
+    // -- Hierarchy designation (disk directories only) --
     if let FileRef::Disk(path) = file_ref {
         if path.is_dir() {
-            let normalized = path.to_string_lossy().replace('\\', "/");
-            let current_role = manager.data.classify_dir(&normalized);
-
-            ui.heading("Directory Role");
-
-            match current_role {
-                DirRole::AssetRoot => {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(100, 220, 100),
-                        "This is an Asset Root",
-                    );
-                    if ui.button("Remove Asset Root").clicked() {
-                        manager.data.asset_roots.remove(&normalized);
-                        manager.dirty = true;
-                        save_and_status(manager, data_dir, ui_state);
-                    }
-                }
-                DirRole::CreatorRoot => {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(100, 160, 255),
-                        "This is a Creator Root",
-                    );
-                    if ui.button("Remove Creator Root").clicked() {
-                        manager.data.creator_roots.remove(&normalized);
-                        manager.dirty = true;
-                        save_and_status(manager, data_dir, ui_state);
-                    }
-                }
-                DirRole::AssetPackRoot => {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 130, 255),
-                        "This is an Asset Pack Root",
-                    );
-                    if ui.button("Remove Asset Pack Root").clicked() {
-                        manager.data.asset_pack_roots.remove(&normalized);
-                        manager.dirty = true;
-                        save_and_status(manager, data_dir, ui_state);
-                    }
-                }
-                DirRole::None => {
-                    if ui.button("Mark as Asset Root").clicked() {
-                        manager.data.asset_roots.insert(normalized.clone());
-                        manager.dirty = true;
-                        save_and_status(manager, data_dir, ui_state);
-                    }
-
-                    if let Some(asset_root) = manager.data.is_inside_asset_root(&normalized) {
-                        if ui.button("Mark as Creator Root").clicked() {
-                            manager.data.creator_roots.insert(
-                                normalized.clone(),
-                                data::CreatorRootEntry {
-                                    asset_root: asset_root.clone(),
-                                },
-                            );
-                            manager.dirty = true;
-                            save_and_status(manager, data_dir, ui_state);
-                        }
-                    }
-
-                    if let Some(creator_root) = manager.data.is_inside_creator_root(&normalized) {
-                        if ui.button("Mark as Asset Pack Root").clicked() {
-                            manager.data.asset_pack_roots.insert(
-                                normalized.clone(),
-                                data::AssetPackRootEntry {
-                                    creator_root: creator_root.clone(),
-                                },
-                            );
-                            manager.dirty = true;
-                            save_and_status(manager, data_dir, ui_state);
-                        }
-                    }
-                }
-            }
-
-            // Show hierarchy context
+            show_hierarchy(ui, path, manager, data_dir, ui_state);
             ui.separator();
-            if let Some(ref ar) = manager.data.is_inside_asset_root(&normalized) {
-                ui.label(format!("Inside asset root: {ar}"));
-            }
-            if let Some(ref cr) = manager.data.is_inside_creator_root(&normalized) {
-                ui.label(format!("Inside creator root: {cr}"));
-            }
         }
     }
 
-    // Grid info for selected file
-    let grid_key = file_ref.to_string_repr();
-    if let Some(saved_grid) = manager.data.grids.get(&grid_key) {
+    // -- Grid editor (when an image is loaded) --
+    if current.width > 0 {
+        show_grid_section(ui, current, camera, grid_state, tile_state, manager, data_dir, ui_state);
         ui.separator();
-        ui.label(format!("Grid: {}x{} cells", saved_grid.cell_w, saved_grid.cell_h));
     }
 
-    // Tags
-    ui.separator();
-    ui.heading("Tags");
+    // -- Tags --
+    show_tags_section(ui, file_ref, manager, data_dir, ui_state);
+}
 
-    let file_key = file_ref.to_string_repr();
+// ---------------------------------------------------------------------------
+// Hierarchy section
+// ---------------------------------------------------------------------------
 
-    // Collect all known tags: seeds + any used across all files
-    let seed_tags = &["4dir-walk", "8dir-walk"];
-    let mut all_tags: Vec<String> = seed_tags.iter().map(|s| s.to_string()).collect();
-    for tags_set in manager.data.tags.values() {
-        for tag in tags_set {
-            if !all_tags.contains(tag) {
-                all_tags.push(tag.clone());
-            }
-        }
-    }
-    all_tags.sort();
+fn show_hierarchy(
+    ui: &mut egui::Ui,
+    path: &std::path::Path,
+    manager: &mut ManagerState,
+    data_dir: &DataDir,
+    ui_state: &mut UiState,
+) {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let current_role = manager.data.classify_dir(&normalized);
 
-    let active_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
+    ui.heading("Directory Role");
 
-    ui.horizontal_wrapped(|ui| {
-        for tag in &all_tags {
-            let is_active = active_tags.contains(tag);
-            if ui.selectable_label(is_active, tag).clicked() {
-                let entry = manager.data.tags.entry(file_key.clone()).or_default();
-                if is_active {
-                    entry.remove(tag);
-                    if entry.is_empty() {
-                        manager.data.tags.remove(&file_key);
-                    }
-                } else {
-                    entry.insert(tag.clone());
-                }
+    match current_role {
+        DirRole::AssetRoot => {
+            ui.colored_label(
+                egui::Color32::from_rgb(100, 220, 100),
+                "This is an Asset Root",
+            );
+            if ui.button("Remove Asset Root").clicked() {
+                manager.data.asset_roots.remove(&normalized);
                 manager.dirty = true;
                 save_and_status(manager, data_dir, ui_state);
             }
         }
-    });
+        DirRole::CreatorRoot => {
+            ui.colored_label(
+                egui::Color32::from_rgb(100, 160, 255),
+                "This is a Creator Root",
+            );
+            if ui.button("Remove Creator Root").clicked() {
+                manager.data.creator_roots.remove(&normalized);
+                manager.dirty = true;
+                save_and_status(manager, data_dir, ui_state);
+            }
+        }
+        DirRole::AssetPackRoot => {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 130, 255),
+                "This is an Asset Pack Root",
+            );
+            if ui.button("Remove Asset Pack Root").clicked() {
+                manager.data.asset_pack_roots.remove(&normalized);
+                manager.dirty = true;
+                save_and_status(manager, data_dir, ui_state);
+            }
+        }
+        DirRole::None => {
+            if ui.button("Mark as Asset Root").clicked() {
+                manager.data.asset_roots.insert(normalized.clone());
+                manager.dirty = true;
+                save_and_status(manager, data_dir, ui_state);
+            }
+
+            if let Some(asset_root) = manager.data.is_inside_asset_root(&normalized) {
+                if ui.button("Mark as Creator Root").clicked() {
+                    manager.data.creator_roots.insert(
+                        normalized.clone(),
+                        data::CreatorRootEntry {
+                            asset_root: asset_root.clone(),
+                        },
+                    );
+                    manager.dirty = true;
+                    save_and_status(manager, data_dir, ui_state);
+                }
+            }
+
+            if let Some(creator_root) = manager.data.is_inside_creator_root(&normalized) {
+                if ui.button("Mark as Asset Pack Root").clicked() {
+                    manager.data.asset_pack_roots.insert(
+                        normalized.clone(),
+                        data::AssetPackRootEntry {
+                            creator_root: creator_root.clone(),
+                        },
+                    );
+                    manager.dirty = true;
+                    save_and_status(manager, data_dir, ui_state);
+                }
+            }
+        }
+    }
+
+    if let Some(ref ar) = manager.data.is_inside_asset_root(&normalized) {
+        ui.label(format!("Inside asset root: {ar}"));
+    }
+    if let Some(ref cr) = manager.data.is_inside_creator_root(&normalized) {
+        ui.label(format!("Inside creator root: {cr}"));
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Grid tab
+// Grid section
 // ---------------------------------------------------------------------------
 
-fn show_grid_tab(
+fn show_grid_section(
     ui: &mut egui::Ui,
     current: &CurrentImage,
     camera: &mut CameraState,
@@ -254,19 +231,7 @@ fn show_grid_tab(
     data_dir: &DataDir,
     ui_state: &mut UiState,
 ) {
-    ui.heading("Grid Editor");
-
-    if current.width == 0 {
-        ui.label("Select an image to configure its grid.");
-        return;
-    }
-
-    if let Some(ref file_ref) = current.file_ref {
-        ui.label(egui::RichText::new(file_ref.display_name()).strong());
-    }
-    ui.label(format!("{}x{} px", current.width, current.height));
-
-    ui.separator();
+    ui.heading("Grid");
 
     if grid_state.cell_w == 0 {
         grid_state.cell_w = current.width;
@@ -314,9 +279,6 @@ fn show_grid_tab(
         ui.label(format!("{cols} cols x {rows} rows"));
     }
 
-    ui.separator();
-
-    // Grid visibility toggle
     ui.checkbox(&mut grid_state.visible, "Show grid (G)");
 
     // Apply / Clear grid buttons
@@ -376,15 +338,57 @@ fn show_grid_tab(
         }
     }
 
-    ui.separator();
-
-    // Snap zoom
     ui.checkbox(&mut camera.snap_zoom, "Snap zoom to integers");
-
-    ui.separator();
-
-    // Tile preview
     ui.checkbox(&mut tile_state.enabled, "Tile preview");
+}
+
+// ---------------------------------------------------------------------------
+// Tags section
+// ---------------------------------------------------------------------------
+
+fn show_tags_section(
+    ui: &mut egui::Ui,
+    file_ref: &FileRef,
+    manager: &mut ManagerState,
+    data_dir: &DataDir,
+    ui_state: &mut UiState,
+) {
+    ui.heading("Tags");
+
+    let file_key = file_ref.to_string_repr();
+
+    // Collect all known tags: seeds + any used across all files
+    let seed_tags = &["4dir-walk", "8dir-walk"];
+    let mut all_tags: Vec<String> = seed_tags.iter().map(|s| s.to_string()).collect();
+    for tags_set in manager.data.tags.values() {
+        for tag in tags_set {
+            if !all_tags.contains(tag) {
+                all_tags.push(tag.clone());
+            }
+        }
+    }
+    all_tags.sort();
+
+    let active_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
+
+    ui.horizontal_wrapped(|ui| {
+        for tag in &all_tags {
+            let is_active = active_tags.contains(tag);
+            if ui.selectable_label(is_active, tag).clicked() {
+                let entry = manager.data.tags.entry(file_key.clone()).or_default();
+                if is_active {
+                    entry.remove(tag);
+                    if entry.is_empty() {
+                        manager.data.tags.remove(&file_key);
+                    }
+                } else {
+                    entry.insert(tag.clone());
+                }
+                manager.dirty = true;
+                save_and_status(manager, data_dir, ui_state);
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

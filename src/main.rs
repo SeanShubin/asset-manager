@@ -52,7 +52,6 @@ fn main() {
     };
 
     let active_tab = match ui_state_persisted.active_tab.as_str() {
-        "Grid" => Tab::Grid,
         "Bundles" => Tab::Bundles,
         _ => Tab::Browse,
     };
@@ -204,7 +203,6 @@ fn save_ui_on_change(
 
     let tab_str = match ui_state.active_tab {
         Tab::Browse => "Browse",
-        Tab::Grid => "Grid",
         Tab::Bundles => "Bundles",
     };
 

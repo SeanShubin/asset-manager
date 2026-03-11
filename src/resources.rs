@@ -189,7 +189,6 @@ pub struct ImageInfo {
 pub enum Tab {
     #[default]
     Browse,
-    Grid,
     Bundles,
 }
 
