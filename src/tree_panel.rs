@@ -80,9 +80,9 @@ pub fn tree_panel_ui(
 
             ui.separator();
 
-            // Regex filter
+            // Regex filter + search
             ui.horizontal(|ui| {
-                ui.label("Filter:");
+                ui.label("Regex:");
                 let response = ui.text_edit_singleline(&mut tree_state.filter_text);
                 if response.changed() {
                     tree_state.filter_regex = if tree_state.filter_text.is_empty() {
@@ -95,9 +95,101 @@ pub fn tree_panel_ui(
                     };
                 }
                 if tree_state.filter_regex.is_none() && !tree_state.filter_text.is_empty() {
-                    ui.colored_label(egui::Color32::RED, "invalid");
+                    ui.colored_label(egui::Color32::RED, "!");
                 }
             });
+
+            // Search button — scans selected directory recursively
+            ui.horizontal(|ui| {
+                let has_regex = tree_state.filter_regex.is_some();
+                if ui.add_enabled(has_regex, egui::Button::new("Search")).clicked() {
+                    let search_root = pick_search_root(&selection, &manager.data);
+                    if let Some(root) = search_root {
+                        let re = tree_state.filter_regex.clone().unwrap();
+                        tree_state.search_root = root.clone();
+                        tree_state.search_results = recursive_search(&root, &re);
+                    }
+                }
+                if !tree_state.search_results.is_empty() {
+                    if ui.small_button("Clear").clicked() {
+                        tree_state.search_results.clear();
+                        tree_state.search_root.clear();
+                    }
+                }
+            });
+
+            // Search results
+            if !tree_state.search_results.is_empty() {
+                ui.separator();
+                let count = tree_state.search_results.len();
+                let root_short = short_name(&tree_state.search_root);
+                ui.label(format!("{count} matches under {root_short}"));
+
+                // Clone results to avoid borrow conflict with tree_state
+                let results: Vec<FileRef> = tree_state.search_results.clone();
+
+                egui::ScrollArea::vertical()
+                    .id_salt("search_results")
+                    .max_height(200.0)
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        for file_ref in &results {
+                            let name = file_ref.display_name();
+                            let is_image = image_loader::is_image_file(&name);
+                            let is_selected = selection.selected_path.as_ref() == Some(file_ref);
+
+                            let icon = if is_image { "\u{1F5BC}" } else { "\u{1F4C4}" };
+                            let label = if is_selected {
+                                egui::RichText::new(format!("{icon} {name}"))
+                                    .strong().color(egui::Color32::WHITE)
+                            } else if is_image {
+                                egui::RichText::new(format!("{icon} {name}"))
+                                    .color(egui::Color32::LIGHT_BLUE)
+                            } else {
+                                egui::RichText::new(format!("{icon} {name}"))
+                            };
+
+                            let response = ui.selectable_label(is_selected, label)
+                                .on_hover_text(file_ref.to_string_repr());
+
+                            if is_selected {
+                                response.scroll_to_me(Some(egui::Align::Center));
+                            }
+                            if response.clicked() {
+                                // Expand ancestors so the file is visible in the tree
+                                let path_str = file_ref.to_string_repr();
+                                expand_path_ancestors(&path_str, &mut tree_state);
+
+                                selection.selected_path = Some(file_ref.clone());
+                                if image_loader::is_image_file(&name) {
+                                    match image_loader::load_image(file_ref) {
+                                        Ok(loaded) => {
+                                            current.width = loaded.rgba.width();
+                                            current.height = loaded.rgba.height();
+                                            current.rgba = Some(loaded.rgba);
+                                            current.info = Some(loaded.info);
+                                            current.file_ref = Some(file_ref.clone());
+                                            camera.fit_requested = true;
+
+                                            let key = file_ref.to_string_repr();
+                                            if let Some(grid) = manager.data.grids.get(&key) {
+                                                grid_state.cell_w = grid.cell_w;
+                                                grid_state.cell_h = grid.cell_h;
+                                                grid_state.visible = true;
+                                            } else {
+                                                grid_state.cell_w = 0;
+                                                grid_state.cell_h = 0;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to load image: {e}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+            }
 
             ui.separator();
 
@@ -636,9 +728,40 @@ pub fn file_navigation(
     mut camera: ResMut<CameraState>,
     mut grid_state: ResMut<GridState>,
     manager: Res<ManagerState>,
+    tree_state: Res<TreeState>,
 ) {
     let left = keyboard.just_pressed(KeyCode::ArrowLeft);
     let right = keyboard.just_pressed(KeyCode::ArrowRight);
+    let up = keyboard.just_pressed(KeyCode::ArrowUp);
+    let down = keyboard.just_pressed(KeyCode::ArrowDown);
+
+    // Up/Down navigate search results when results are present
+    if (up || down) && !tree_state.search_results.is_empty() {
+        let results = &tree_state.search_results;
+        let current_idx = selection
+            .selected_path
+            .as_ref()
+            .and_then(|sel| results.iter().position(|f| f == sel));
+
+        let new_idx = match current_idx {
+            Some(idx) => {
+                if up && idx > 0 {
+                    idx - 1
+                } else if down && idx + 1 < results.len() {
+                    idx + 1
+                } else {
+                    return;
+                }
+            }
+            None => 0,
+        };
+
+        let new_ref = results[new_idx].clone();
+        select_file(new_ref, &mut selection, &mut current, &mut camera, &mut grid_state, &manager);
+        return;
+    }
+
+    // Left/Right navigate siblings
     if !left && !right {
         return;
     }
@@ -667,20 +790,32 @@ pub fn file_navigation(
     };
 
     let new_ref = siblings[new_idx].clone();
-    let name = new_ref.display_name();
-    selection.selected_path = Some(new_ref.clone());
+    select_file(new_ref, &mut selection, &mut current, &mut camera, &mut grid_state, &manager);
+}
+
+/// Load and select a file, updating all relevant state.
+fn select_file(
+    file_ref: FileRef,
+    selection: &mut TreeSelection,
+    current: &mut CurrentImage,
+    camera: &mut CameraState,
+    grid_state: &mut GridState,
+    manager: &ManagerState,
+) {
+    let name = file_ref.display_name();
+    selection.selected_path = Some(file_ref.clone());
 
     if image_loader::is_image_file(&name) {
-        match image_loader::load_image(&new_ref) {
+        match image_loader::load_image(&file_ref) {
             Ok(loaded) => {
                 current.width = loaded.rgba.width();
                 current.height = loaded.rgba.height();
                 current.rgba = Some(loaded.rgba);
                 current.info = Some(loaded.info);
-                current.file_ref = Some(new_ref.clone());
+                current.file_ref = Some(file_ref.clone());
                 camera.fit_requested = true;
 
-                let key = new_ref.to_string_repr();
+                let key = file_ref.to_string_repr();
                 if let Some(grid) = manager.data.grids.get(&key) {
                     grid_state.cell_w = grid.cell_w;
                     grid_state.cell_h = grid.cell_h;
@@ -808,6 +943,151 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
                     entry: e,
                 })
                 .collect()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recursive search
+// ---------------------------------------------------------------------------
+
+/// Pick the best root directory to search from.
+/// Uses the selected directory, or its parent if a file is selected,
+/// or falls back to the first asset root.
+fn pick_search_root(selection: &TreeSelection, data: &ManagerData) -> Option<String> {
+    if let Some(ref file_ref) = selection.selected_path {
+        match file_ref {
+            FileRef::Disk(path) => {
+                if path.is_dir() {
+                    return Some(path.to_string_lossy().replace('\\', "/"));
+                }
+                if let Some(parent) = path.parent() {
+                    return Some(parent.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            FileRef::ZipEntry { zip_path, .. } => {
+                if let Some(parent) = zip_path.parent() {
+                    return Some(parent.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            FileRef::NestedZipEntry { outer_zip, .. } => {
+                if let Some(parent) = outer_zip.parent() {
+                    return Some(parent.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    // Fall back to first asset root
+    data.asset_roots.iter().next().cloned()
+}
+
+const MAX_SEARCH_RESULTS: usize = 200;
+
+/// Recursively search a directory for files matching the regex.
+/// Scans disk files and inside zip archives (including nested zips).
+fn recursive_search(root: &str, re: &regex::Regex) -> Vec<FileRef> {
+    let mut results = Vec::new();
+    search_dir(Path::new(root), re, &mut results, 0);
+    results
+}
+
+fn search_dir(dir: &Path, re: &regex::Regex, results: &mut Vec<FileRef>, depth: usize) {
+    if depth > MAX_DEPTH || results.len() >= MAX_SEARCH_RESULTS {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let mut items: Vec<_> = entries.flatten().collect();
+    items.sort_by_key(|e| e.path());
+
+    for entry in items {
+        if results.len() >= MAX_SEARCH_RESULTS {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            search_dir(&path, re, results, depth + 1);
+        } else {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.to_ascii_lowercase().ends_with(".zip") {
+                search_zip(&path, re, results);
+            } else if re.is_match(name) {
+                results.push(FileRef::Disk(path));
+            }
+        }
+    }
+}
+
+fn search_zip(zip_path: &Path, re: &regex::Regex, results: &mut Vec<FileRef>) {
+    let Ok(file) = std::fs::File::open(zip_path) else {
+        return;
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return;
+    };
+
+    for i in 0..archive.len() {
+        if results.len() >= MAX_SEARCH_RESULTS {
+            return;
+        }
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
+
+        let file_name = name.rsplit('/').next().unwrap_or(&name);
+
+        if file_name.to_ascii_lowercase().ends_with(".zip") {
+            // Nested zip — search inside it
+            drop(entry);
+            search_nested_zip(zip_path, &name, re, results);
+        } else if re.is_match(file_name) {
+            results.push(FileRef::ZipEntry {
+                zip_path: zip_path.to_path_buf(),
+                entry: name,
+            });
+        }
+    }
+}
+
+fn search_nested_zip(
+    outer_zip: &Path,
+    inner_entry: &str,
+    re: &regex::Regex,
+    results: &mut Vec<FileRef>,
+) {
+    let Ok(inner_bytes) = image_loader::read_zip_entry_bytes(outer_zip, inner_entry) else {
+        return;
+    };
+    let cursor = std::io::Cursor::new(inner_bytes);
+    let Ok(mut archive) = zip::ZipArchive::new(cursor) else {
+        return;
+    };
+
+    for i in 0..archive.len() {
+        if results.len() >= MAX_SEARCH_RESULTS {
+            return;
+        }
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
+        let file_name = name.rsplit('/').next().unwrap_or(&name);
+        if re.is_match(file_name) {
+            results.push(FileRef::NestedZipEntry {
+                outer_zip: outer_zip.to_path_buf(),
+                inner_entry: inner_entry.to_string(),
+                entry: name,
+            });
         }
     }
 }

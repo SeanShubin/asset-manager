@@ -78,6 +78,10 @@ pub struct TreeState {
     pub filter_text: String,
     /// Compiled regex from filter_text (None if empty or invalid)
     pub filter_regex: Option<regex::Regex>,
+    /// Search results from recursive scan
+    pub search_results: Vec<crate::data::FileRef>,
+    /// Root path used for the last search (display only)
+    pub search_root: String,
 }
 
 impl Default for TreeState {
@@ -92,6 +96,8 @@ impl Default for TreeState {
             force_open: BTreeSet::new(),
             filter_text: String::new(),
             filter_regex: None,
+            search_results: Vec::new(),
+            search_root: String::new(),
         }
     }
 }
@@ -108,6 +114,8 @@ impl TreeState {
             force_open: BTreeSet::new(),
             filter_text: String::new(),
             filter_regex: None,
+            search_results: Vec::new(),
+            search_root: String::new(),
         }
     }
 }
