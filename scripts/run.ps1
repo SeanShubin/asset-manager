@@ -2,7 +2,7 @@
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
-$DataDir = Join-Path (Split-Path -Parent $RepoRoot) "seans-assets"
+$DataDir = Join-Path $RepoRoot "seans-assets"
 
 if (-not (Test-Path $DataDir)) {
     New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
