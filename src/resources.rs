@@ -74,6 +74,10 @@ pub struct TreeState {
     pub save_requested: bool,
     /// One-shot: force these nodes open (overrides egui internal state)
     pub force_open: BTreeSet<String>,
+    /// Regex filter text (raw input string)
+    pub filter_text: String,
+    /// Compiled regex from filter_text (None if empty or invalid)
+    pub filter_regex: Option<regex::Regex>,
 }
 
 impl Default for TreeState {
@@ -86,6 +90,8 @@ impl Default for TreeState {
             scroll_pending_save: false,
             save_requested: false,
             force_open: BTreeSet::new(),
+            filter_text: String::new(),
+            filter_regex: None,
         }
     }
 }
@@ -100,6 +106,8 @@ impl TreeState {
             scroll_pending_save: false,
             save_requested: false,
             force_open: BTreeSet::new(),
+            filter_text: String::new(),
+            filter_regex: None,
         }
     }
 }
@@ -161,6 +169,16 @@ pub struct CurrentImage {
     pub rgba: Option<image::RgbaImage>,
     pub width: u32,
     pub height: u32,
+    pub info: Option<ImageInfo>,
+}
+
+/// Metadata about the loaded image, computed at load time.
+#[derive(Clone, Default)]
+pub struct ImageInfo {
+    pub file_size: u64,
+    pub color_type: String,
+    pub has_alpha: bool,
+    pub unique_colors: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +197,7 @@ pub enum Tab {
 pub struct UiState {
     pub active_tab: Tab,
     pub status_message: Option<(String, f64)>,
+    pub show_shortcuts: bool,
 }
 
 impl Default for UiState {
@@ -186,6 +205,7 @@ impl Default for UiState {
         Self {
             active_tab: Tab::Browse,
             status_message: None,
+            show_shortcuts: false,
         }
     }
 }

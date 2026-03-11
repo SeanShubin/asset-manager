@@ -80,6 +80,27 @@ pub fn tree_panel_ui(
 
             ui.separator();
 
+            // Regex filter
+            ui.horizontal(|ui| {
+                ui.label("Filter:");
+                let response = ui.text_edit_singleline(&mut tree_state.filter_text);
+                if response.changed() {
+                    tree_state.filter_regex = if tree_state.filter_text.is_empty() {
+                        None
+                    } else {
+                        regex::RegexBuilder::new(&tree_state.filter_text)
+                            .case_insensitive(true)
+                            .build()
+                            .ok()
+                    };
+                }
+                if tree_state.filter_regex.is_none() && !tree_state.filter_text.is_empty() {
+                    ui.colored_label(egui::Color32::RED, "invalid");
+                }
+            });
+
+            ui.separator();
+
             let scroll_id = egui::Id::new("tree_scroll");
 
             let mut scroll_area = egui::ScrollArea::vertical().id_salt(scroll_id);
@@ -218,6 +239,15 @@ fn show_dir(
         let is_zip = name.to_ascii_lowercase().ends_with(".zip");
         let is_image = image_loader::is_image_file(name);
 
+        // Apply regex filter to non-zip leaf files
+        if !is_zip {
+            if let Some(ref re) = ctx.tree_state.filter_regex {
+                if !re.is_match(name) {
+                    continue;
+                }
+            }
+        }
+
         let file_ref = FileRef::Disk(file.clone());
         let is_selected = ctx.selection.selected_path.as_ref() == Some(&file_ref);
 
@@ -355,6 +385,15 @@ fn show_zip_entries(
         let file_name = file_entry.rsplit('/').next().unwrap_or(file_entry);
         let is_zip = file_name.to_ascii_lowercase().ends_with(".zip");
         let is_image = image_loader::is_image_file(file_name);
+
+        // Apply regex filter to non-zip leaf files
+        if !is_zip {
+            if let Some(ref re) = ctx.tree_state.filter_regex {
+                if !re.is_match(file_name) {
+                    continue;
+                }
+            }
+        }
 
         if is_zip {
             // Nested zip — render as expandable
@@ -507,6 +546,14 @@ fn show_nested_zip_entries(
     for file_entry in &files {
         let file_name = file_entry.rsplit('/').next().unwrap_or(file_entry);
         let is_image = image_loader::is_image_file(file_name);
+
+        // Apply regex filter
+        if let Some(ref re) = ctx.tree_state.filter_regex {
+            if !re.is_match(file_name) {
+                continue;
+            }
+        }
+
         let file_ref = FileRef::NestedZipEntry {
             outer_zip: outer_zip.to_path_buf(),
             inner_entry: inner_entry.to_string(),
@@ -546,11 +593,12 @@ fn apply_selection(
     ctx.selection.selected_path = Some(file_ref.clone());
 
     if image_loader::is_image_file(&name) {
-        match image_loader::load_rgba(&file_ref) {
-            Ok(rgba) => {
-                ctx.current.width = rgba.width();
-                ctx.current.height = rgba.height();
-                ctx.current.rgba = Some(rgba);
+        match image_loader::load_image(&file_ref) {
+            Ok(loaded) => {
+                ctx.current.width = loaded.rgba.width();
+                ctx.current.height = loaded.rgba.height();
+                ctx.current.rgba = Some(loaded.rgba);
+                ctx.current.info = Some(loaded.info);
                 ctx.current.file_ref = Some(file_ref.clone());
                 ctx.camera.fit_requested = true;
 
@@ -568,6 +616,7 @@ fn apply_selection(
             Err(e) => {
                 eprintln!("Failed to load image: {e}");
                 ctx.current.rgba = None;
+                ctx.current.info = None;
                 ctx.current.width = 0;
                 ctx.current.height = 0;
                 ctx.current.file_ref = None;
@@ -622,11 +671,12 @@ pub fn file_navigation(
     selection.selected_path = Some(new_ref.clone());
 
     if image_loader::is_image_file(&name) {
-        match image_loader::load_rgba(&new_ref) {
-            Ok(rgba) => {
-                current.width = rgba.width();
-                current.height = rgba.height();
-                current.rgba = Some(rgba);
+        match image_loader::load_image(&new_ref) {
+            Ok(loaded) => {
+                current.width = loaded.rgba.width();
+                current.height = loaded.rgba.height();
+                current.rgba = Some(loaded.rgba);
+                current.info = Some(loaded.info);
                 current.file_ref = Some(new_ref.clone());
                 camera.fit_requested = true;
 
@@ -643,6 +693,7 @@ pub fn file_navigation(
             Err(e) => {
                 eprintln!("Failed to load image: {e}");
                 current.rgba = None;
+                current.info = None;
                 current.width = 0;
                 current.height = 0;
                 current.file_ref = None;

@@ -10,6 +10,7 @@ mod export;
 mod grid;
 mod image_loader;
 mod resources;
+mod shortcuts;
 mod status_bar;
 mod tree_panel;
 mod ui_persist;
@@ -111,6 +112,7 @@ fn main() {
                 tree_panel::tree_panel_ui,
                 detail_panel::detail_panel_ui,
                 status_bar::status_bar_ui,
+                shortcuts::shortcuts_overlay,
                 update_egui_pointer_state,
             )
                 .chain(),
@@ -146,11 +148,12 @@ fn restore_selected_image(
         return;
     }
 
-    match image_loader::load_rgba(file_ref) {
-        Ok(rgba) => {
-            current.width = rgba.width();
-            current.height = rgba.height();
-            current.rgba = Some(rgba);
+    match image_loader::load_image(file_ref) {
+        Ok(loaded) => {
+            current.width = loaded.rgba.width();
+            current.height = loaded.rgba.height();
+            current.rgba = Some(loaded.rgba);
+            current.info = Some(loaded.info);
             current.file_ref = Some(file_ref.clone());
             camera.fit_requested = true;
 

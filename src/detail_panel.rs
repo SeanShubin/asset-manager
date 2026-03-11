@@ -85,7 +85,22 @@ fn show_browse_tab(
 
     // Image info
     if current.width > 0 {
-        ui.label(format!("{}x{} px", current.width, current.height));
+        if let Some(ref info) = current.info {
+            ui.label(format!(
+                "{}x{} px, {} colors, {}",
+                current.width,
+                current.height,
+                info.unique_colors,
+                if info.has_alpha { "has alpha" } else { "opaque" },
+            ));
+            ui.label(format!(
+                "{}, {}",
+                info.color_type,
+                format_file_size(info.file_size),
+            ));
+        } else {
+            ui.label(format!("{}x{} px", current.width, current.height));
+        }
     }
 
     ui.separator();
@@ -384,6 +399,16 @@ fn show_bundles_tab(ui: &mut egui::Ui) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
 
 fn save_and_status(manager: &mut ManagerState, data_dir: &DataDir, ui_state: &mut UiState) {
     match data::save_data(&data_dir.path, &manager.data) {

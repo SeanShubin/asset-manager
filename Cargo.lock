@@ -306,6 +306,7 @@ dependencies = [
  "bevy_egui",
  "glob",
  "image",
+ "regex",
  "serde",
  "toml",
  "zip",

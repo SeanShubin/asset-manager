@@ -172,7 +172,12 @@ pub fn grid_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
     current: Res<CurrentImage>,
     mut grid_state: ResMut<GridState>,
+    mut ui_state: ResMut<UiState>,
 ) {
+    if keyboard.just_pressed(KeyCode::F1) {
+        ui_state.show_shortcuts = !ui_state.show_shortcuts;
+    }
+
     if keyboard.just_pressed(KeyCode::KeyG) {
         grid_state.visible = !grid_state.visible;
     }

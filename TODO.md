@@ -64,7 +64,7 @@ Zip-internal paths use `//` separator: `D:/foo/pack.zip//sprites/hero.png`
 - [x] Detect `.zip` files in tree, render as expandable directories
 - [x] Build virtual directory tree from zip entries
 - [x] Load image from zip entry for preview
-- [ ] Nested zip support (zips inside zips)
+- [x] Nested zip support (zips inside zips)
 
 ### Phase 5: Bundles + Export
 - [ ] Bundles tab: create/delete bundles with name field
@@ -75,7 +75,7 @@ Zip-internal paths use `//` separator: `D:/foo/pack.zip//sprites/hero.png`
 - [ ] Export metadata: write manifest TOML alongside exported files
 
 ### Phase 6: Polish
-- [ ] Tree search/filter (approach TBD)
+- [x] Tree regex filter (case-insensitive, filters leaf files by name)
 - [ ] Animated sprite preview (RPG Maker default frame timings)
-- [ ] Image info panel (color depth, has-alpha, unique color count, file size)
-- [ ] Keyboard shortcuts help overlay
+- [x] Image info panel (color type, has-alpha, unique color count, file size)
+- [x] Keyboard shortcuts help overlay (F1)
