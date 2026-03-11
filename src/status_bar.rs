@@ -47,10 +47,7 @@ pub fn status_bar_ui(
             }
 
             if browser.tile_preview {
-                ui.label(format!(
-                    "| Tile: {}x{}",
-                    browser.tile_cols, browser.tile_rows
-                ));
+                ui.label("| Tiling");
             }
         });
     });

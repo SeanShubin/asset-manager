@@ -295,6 +295,7 @@ pub fn update_tile_preview(
     mut images: ResMut<Assets<Image>>,
     existing_tiles: Query<Entity, With<TileSprite>>,
     preview_sprite: Query<&Sprite, With<PreviewSprite>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     // Only rebuild when state changes
     if !browser.is_changed() && !current.is_changed() {
@@ -318,6 +319,10 @@ pub fn update_tile_preview(
         return;
     };
 
+    let Ok(window) = windows.single() else {
+        return;
+    };
+
     let w = current.width as f32;
     let h = current.height as f32;
     if w == 0.0 || h == 0.0 {
@@ -326,8 +331,17 @@ pub fn update_tile_preview(
 
     let handle = image_loader::rgba_to_bevy_handle(rgba, &mut images);
 
-    let cols = browser.tile_cols as i32;
-    let rows = browser.tile_rows as i32;
+    // Auto-calculate tile count from visible viewport area
+    let safe_zoom = browser.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    let world_w = window.width() / safe_zoom;
+    let world_h = window.height() / safe_zoom;
+    // Extra +2 so tiles cover edges during panning
+    let cols = ((world_w / w).ceil() as i32 + 2).max(3);
+    let rows = ((world_h / h).ceil() as i32 + 2).max(3);
+
+    // Inset 0.1px on the texture rect to prevent sub-pixel gridline bleeding
+    let inset = 0.1;
+    let rect = bevy::math::Rect::new(inset, inset, w - inset, h - inset);
 
     // Center tile is the main sprite at (0,0); spawn surrounding tiles
     for row in 0..rows {
@@ -339,7 +353,12 @@ pub fn update_tile_preview(
             let offset_y = -(row - rows / 2) as f32 * h;
             commands.spawn((
                 TileSprite,
-                Sprite::from_image(handle.clone()),
+                Sprite {
+                    image: handle.clone(),
+                    rect: Some(rect),
+                    custom_size: Some(Vec2::new(w, h)),
+                    ..default()
+                },
                 Transform::from_xyz(offset_x, offset_y, -0.1),
                 NoFrustumCulling,
             ));

@@ -31,6 +31,44 @@ pub fn tree_panel_ui(
         .default_width(280.0)
         .show(ctx, |ui| {
             ui.heading("File Browser");
+
+            // Bookmarks — quick-jump to designated roots
+            let has_bookmarks = !manager.data.asset_roots.is_empty()
+                || !manager.data.creator_roots.is_empty()
+                || !manager.data.asset_pack_roots.is_empty();
+
+            if has_bookmarks {
+                ui.separator();
+                egui::CollapsingHeader::new("Bookmarks")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for path in &manager.data.asset_roots {
+                        let short = short_name(path);
+                        let label = egui::RichText::new(format!("[AR] {short}"))
+                            .color(egui::Color32::from_rgb(100, 220, 100));
+                        if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                            expand_path_ancestors(path, &mut tree_state);
+                        }
+                    }
+                    for path in manager.data.creator_roots.keys() {
+                        let short = short_name(path);
+                        let label = egui::RichText::new(format!("[CR] {short}"))
+                            .color(egui::Color32::from_rgb(100, 160, 255));
+                        if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                            expand_path_ancestors(path, &mut tree_state);
+                        }
+                    }
+                    for path in manager.data.asset_pack_roots.keys() {
+                        let short = short_name(path);
+                        let label = egui::RichText::new(format!("[PR] {short}"))
+                            .color(egui::Color32::from_rgb(200, 130, 255));
+                        if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                            expand_path_ancestors(path, &mut tree_state);
+                        }
+                    }
+                });
+            }
+
             ui.separator();
 
             let scroll_id = egui::Id::new("tree_scroll");
@@ -53,6 +91,9 @@ pub fn tree_panel_ui(
                     &manager.data, &mut tree_state,
                 );
             });
+
+            // Clear force-open after tree has rendered
+            tree_state.force_open.clear();
 
             // Track scroll position — debounce saves until scroll settles
             let new_scroll_y = output.state.offset.y;
@@ -85,12 +126,10 @@ fn show_drives(
             let role = data.classify_dir(&drive);
             let label = format_dir_label(&drive, &role);
             let node_key = drive.clone();
-            let is_open = tree_state.expanded.contains(&node_key);
 
-            let response = egui::CollapsingHeader::new(label)
-                .id_salt(&drive)
-                .default_open(is_open)
-                .show(ui, |ui| {
+            let header = egui::CollapsingHeader::new(label).id_salt(&drive);
+            let header = apply_open_state(header, &node_key, tree_state);
+            let response = header.show(ui, |ui| {
                     show_dir(ui, &drive_path, 1, selection, current, browser, images, data, tree_state);
                 });
 
@@ -152,12 +191,9 @@ fn show_dir(
         let role = data.classify_dir(&dir_str);
         let label = format_dir_label(name, &role);
         let node_key = dir_str.clone();
-        let is_open = tree_state.expanded.contains(&node_key);
 
-        let header = egui::CollapsingHeader::new(label)
-            .id_salt(dir)
-            .default_open(is_open);
-
+        let header = egui::CollapsingHeader::new(label).id_salt(dir);
+        let header = apply_open_state(header, &node_key, tree_state);
         let response = header.show(ui, |ui| {
             show_dir(ui, dir, depth + 1, selection, current, browser, images, data, tree_state);
         });
@@ -188,12 +224,10 @@ fn show_dir(
                 .color(egui::Color32::from_rgb(200, 180, 100));
 
             let node_key = file.to_string_lossy().replace('\\', "/");
-            let is_open = tree_state.expanded.contains(&node_key);
 
-            let response = egui::CollapsingHeader::new(zip_label)
-                .id_salt(file)
-                .default_open(is_open)
-                .show(ui, |ui| {
+            let header = egui::CollapsingHeader::new(zip_label).id_salt(file);
+            let header = apply_open_state(header, &node_key, tree_state);
+            let response = header.show(ui, |ui| {
                     show_zip_contents(ui, file, selection, current, browser, images, data, tree_state);
                 });
 
@@ -312,12 +346,11 @@ fn show_zip_entries(
         let display_name = display_name.rsplit('/').next().unwrap_or(display_name);
 
         let node_key = format!("{}//{}", zip_path.to_string_lossy().replace('\\', "/"), subdir);
-        let is_open = tree_state.expanded.contains(&node_key);
 
-        let response = egui::CollapsingHeader::new(format!("\u{1F4C1} {display_name}"))
-            .id_salt(format!("{}{}", zip_path.display(), subdir))
-            .default_open(is_open)
-            .show(ui, |ui| {
+        let header = egui::CollapsingHeader::new(format!("\u{1F4C1} {display_name}"))
+            .id_salt(format!("{}{}", zip_path.display(), subdir));
+        let header = apply_open_state(header, &node_key, tree_state);
+        let response = header.show(ui, |ui| {
                 show_zip_entries(
                     ui, zip_path, entries, subdir,
                     selection, current, browser, images, data, tree_state,
@@ -528,6 +561,19 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Apply `.open(Some(true))` if this node is in the force-open set, otherwise use `default_open`.
+fn apply_open_state(
+    header: egui::CollapsingHeader,
+    node_key: &str,
+    tree_state: &TreeState,
+) -> egui::CollapsingHeader {
+    if tree_state.force_open.contains(node_key) {
+        header.open(Some(true))
+    } else {
+        header.default_open(tree_state.expanded.contains(node_key))
+    }
+}
+
 /// Track whether a collapsing header is open or closed.
 /// `openness` is 0.0 (collapsed) to 1.0 (open), animated.
 fn track_expansion(openness: f32, node_key: &str, tree_state: &mut TreeState) {
@@ -542,6 +588,39 @@ fn track_expansion(openness: f32, node_key: &str, tree_state: &mut TreeState) {
         }
         tree_state.save_requested = true;
     }
+}
+
+/// Extract the last path component as a display name for bookmarks.
+fn short_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// Expand all ancestor directories so the target path is visible in the tree.
+/// Populates both `expanded` (for persistence) and `force_open` (to override egui state).
+fn expand_path_ancestors(path: &str, tree_state: &mut TreeState) {
+    let normalized = path.replace('\\', "/");
+    // Build all ancestor keys: D:/, D:/foo, D:/foo/bar, ...
+    let parts: Vec<&str> = normalized.split('/').collect();
+    let mut ancestor = String::new();
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            // Drive letter on Windows (e.g. "D:") or empty for unix root
+            ancestor = format!("{part}/");
+        } else if part.is_empty() {
+            continue;
+        } else {
+            ancestor = format!("{}{part}", ancestor);
+        }
+        tree_state.expanded.insert(ancestor.clone());
+        tree_state.force_open.insert(ancestor.clone());
+        if i > 0 {
+            ancestor.push('/');
+        }
+    }
+    tree_state.expanded.insert(normalized.clone());
+    tree_state.force_open.insert(normalized);
+    tree_state.save_requested = true;
 }
 
 fn format_dir_label(name: &str, role: &DirRole) -> egui::RichText {

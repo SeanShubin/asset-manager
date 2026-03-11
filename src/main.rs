@@ -59,8 +59,6 @@ fn main() {
         zoom: ui_state_persisted.zoom.clamp(0.1, 50.0),
         snap_zoom: ui_state_persisted.snap_zoom,
         tile_preview: ui_state_persisted.tile_preview,
-        tile_cols: ui_state_persisted.tile_cols,
-        tile_rows: ui_state_persisted.tile_rows,
         fit_requested: true,
         ..Default::default()
     };
@@ -196,8 +194,6 @@ fn save_ui_on_change(
         zoom: browser.zoom,
         snap_zoom: browser.snap_zoom,
         tile_preview: browser.tile_preview,
-        tile_cols: browser.tile_cols,
-        tile_rows: browser.tile_rows,
     };
 
     ui_persist::save_ui_state(&data_dir.path, &persisted);

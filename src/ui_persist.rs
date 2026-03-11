@@ -46,22 +46,10 @@ pub struct PersistedUiState {
     /// Tile preview enabled
     #[serde(default)]
     pub tile_preview: bool,
-
-    /// Tile preview columns
-    #[serde(default = "default_tile_dim")]
-    pub tile_cols: u32,
-
-    /// Tile preview rows
-    #[serde(default = "default_tile_dim")]
-    pub tile_rows: u32,
 }
 
 fn default_zoom() -> f32 {
     1.0
-}
-
-fn default_tile_dim() -> u32 {
-    3
 }
 
 // ---------------------------------------------------------------------------

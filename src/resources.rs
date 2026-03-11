@@ -49,6 +49,8 @@ pub struct TreeState {
     pub scroll_pending_save: bool,
     /// Set to true when a discrete action (expand/collapse) needs saving
     pub save_requested: bool,
+    /// One-shot: force these nodes open (overrides egui internal state)
+    pub force_open: BTreeSet<String>,
 }
 
 impl Default for TreeState {
@@ -60,6 +62,7 @@ impl Default for TreeState {
             scroll_settle_timer: 0.0,
             scroll_pending_save: false,
             save_requested: false,
+            force_open: BTreeSet::new(),
         }
     }
 }
@@ -73,6 +76,7 @@ impl TreeState {
             scroll_settle_timer: 0.0,
             scroll_pending_save: false,
             save_requested: false,
+            force_open: BTreeSet::new(),
         }
     }
 }
@@ -92,8 +96,6 @@ pub struct BrowserState {
     pub cell_w: u32,
     pub cell_h: u32,
     pub tile_preview: bool,
-    pub tile_cols: u32,
-    pub tile_rows: u32,
     pub fit_requested: bool,
 }
 
@@ -109,8 +111,6 @@ impl Default for BrowserState {
             cell_w: 0,
             cell_h: 0,
             tile_preview: false,
-            tile_cols: 3,
-            tile_rows: 3,
             fit_requested: true,
         }
     }

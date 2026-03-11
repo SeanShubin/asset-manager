@@ -392,23 +392,6 @@ fn show_grid_tab(
 
     // Tile preview
     ui.checkbox(&mut browser.tile_preview, "Tile preview");
-
-    if browser.tile_preview {
-        ui.horizontal(|ui| {
-            ui.label("Cols:");
-            let mut cols = browser.tile_cols as i32;
-            if ui.add(egui::DragValue::new(&mut cols).range(1..=20)).changed() {
-                browser.tile_cols = cols.max(1) as u32;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Rows:");
-            let mut rows = browser.tile_rows as i32;
-            if ui.add(egui::DragValue::new(&mut rows).range(1..=20)).changed() {
-                browser.tile_rows = rows.max(1) as u32;
-            }
-        });
-    }
 }
 
 // ---------------------------------------------------------------------------
