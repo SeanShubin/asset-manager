@@ -90,6 +90,7 @@ fn main() {
                 viewport::update_preview_sprite,
                 viewport::pan_zoom,
                 viewport::grid_keyboard,
+                tree_panel::file_navigation,
                 viewport::auto_fit_zoom,
                 viewport::apply_camera,
                 viewport::draw_grid,

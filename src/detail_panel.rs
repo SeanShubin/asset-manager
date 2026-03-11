@@ -205,6 +205,45 @@ fn show_browse_tab(
         ui.separator();
         ui.label(format!("Grid: {}x{} cells", grid.cell_w, grid.cell_h));
     }
+
+    // Tags
+    ui.separator();
+    ui.heading("Tags");
+
+    let file_key = file_ref.to_string_repr();
+
+    // Collect all known tags: seeds + any used across all files
+    let seed_tags = &["4dir-walk", "8dir-walk"];
+    let mut all_tags: Vec<String> = seed_tags.iter().map(|s| s.to_string()).collect();
+    for tags_set in manager.data.tags.values() {
+        for tag in tags_set {
+            if !all_tags.contains(tag) {
+                all_tags.push(tag.clone());
+            }
+        }
+    }
+    all_tags.sort();
+
+    let active_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
+
+    ui.horizontal_wrapped(|ui| {
+        for tag in &all_tags {
+            let is_active = active_tags.contains(tag);
+            if ui.selectable_label(is_active, tag).clicked() {
+                let entry = manager.data.tags.entry(file_key.clone()).or_default();
+                if is_active {
+                    entry.remove(tag);
+                    if entry.is_empty() {
+                        manager.data.tags.remove(&file_key);
+                    }
+                } else {
+                    entry.insert(tag.clone());
+                }
+                manager.dirty = true;
+                save_and_status(manager, data_dir, ui_state);
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

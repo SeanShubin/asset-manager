@@ -79,6 +79,9 @@ pub struct ManagerData {
     pub grids: BTreeMap<String, GridDef>,
     #[serde(default)]
     pub bundles: BTreeMap<String, BundleDef>,
+    /// Tags per file — key is FileRef string repr, value is set of tag strings
+    #[serde(default)]
+    pub tags: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

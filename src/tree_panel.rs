@@ -367,6 +367,16 @@ fn select_file(
     _images: &mut Assets<Image>,
     data: &ManagerData,
 ) {
+    apply_selection(file_ref, selection, current, browser, data);
+}
+
+fn apply_selection(
+    file_ref: FileRef,
+    selection: &mut TreeSelection,
+    current: &mut CurrentImage,
+    browser: &mut BrowserState,
+    data: &ManagerData,
+) {
     let name = file_ref.display_name();
     selection.selected_path = Some(file_ref.clone());
 
@@ -397,6 +407,119 @@ fn select_file(
                 current.height = 0;
                 current.file_ref = None;
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard file navigation (Left/Right arrow)
+// ---------------------------------------------------------------------------
+
+pub fn file_navigation(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut selection: ResMut<TreeSelection>,
+    mut current: ResMut<CurrentImage>,
+    mut browser: ResMut<BrowserState>,
+    manager: Res<ManagerState>,
+) {
+    let left = keyboard.just_pressed(KeyCode::ArrowLeft);
+    let right = keyboard.just_pressed(KeyCode::ArrowRight);
+    if !left && !right {
+        return;
+    }
+
+    let Some(ref file_ref) = selection.selected_path else {
+        return;
+    };
+
+    let siblings = sibling_files(file_ref);
+    if siblings.is_empty() {
+        return;
+    }
+
+    // Find current index in siblings
+    let current_idx = siblings.iter().position(|f| f == file_ref);
+    let new_idx = match current_idx {
+        Some(idx) => {
+            if left && idx > 0 {
+                idx - 1
+            } else if right && idx + 1 < siblings.len() {
+                idx + 1
+            } else {
+                return;
+            }
+        }
+        None => {
+            // Not found in siblings (shouldn't happen), go to first
+            0
+        }
+    };
+
+    let new_ref = siblings[new_idx].clone();
+    apply_selection(new_ref, &mut selection, &mut current, &mut browser, &manager.data);
+}
+
+/// List sibling files (sorted) for the given FileRef.
+fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
+    match file_ref {
+        FileRef::Disk(path) => {
+            let Some(parent) = path.parent() else {
+                return Vec::new();
+            };
+            let Ok(entries) = std::fs::read_dir(parent) else {
+                return Vec::new();
+            };
+            let mut files: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file())
+                .collect();
+            files.sort();
+            files.into_iter().map(FileRef::Disk).collect()
+        }
+        FileRef::ZipEntry { zip_path, entry } => {
+            // Get the "directory" prefix within the zip
+            let prefix = match entry.rfind('/') {
+                Some(idx) => &entry[..=idx],
+                None => "",
+            };
+
+            let Ok(file) = std::fs::File::open(zip_path) else {
+                return Vec::new();
+            };
+            let Ok(mut archive) = zip::ZipArchive::new(file) else {
+                return Vec::new();
+            };
+
+            let mut files: Vec<String> = Vec::new();
+            for i in 0..archive.len() {
+                if let Ok(ze) = archive.by_index(i) {
+                    let name = ze.name().to_string();
+                    if name.ends_with('/') {
+                        continue;
+                    }
+                    // Check same directory level
+                    let suffix = if prefix.is_empty() {
+                        name.as_str()
+                    } else if let Some(s) = name.strip_prefix(prefix) {
+                        s
+                    } else {
+                        continue;
+                    };
+                    // Only direct children (no further slashes)
+                    if !suffix.contains('/') {
+                        files.push(name);
+                    }
+                }
+            }
+            files.sort();
+            files
+                .into_iter()
+                .map(|e| FileRef::ZipEntry {
+                    zip_path: zip_path.clone(),
+                    entry: e,
+                })
+                .collect()
         }
     }
 }
