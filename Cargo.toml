@@ -1,0 +1,20 @@
+[package]
+name = "asset-manager"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.18.0"
+bevy_egui = "0.39.1"
+glob = "0.3"
+image = "0.25"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zip = "2"
+
+# Enable fast compiles for development (Bevy recommendation)
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
