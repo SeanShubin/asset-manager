@@ -23,6 +23,7 @@ pub fn detail_panel_ui(
     mut ui_state: ResMut<UiState>,
     data_dir: Res<DataDir>,
     time: Res<Time>,
+    cell_selection: Res<CellSelection>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -56,6 +57,7 @@ pub fn detail_panel_ui(
                 Tab::Browse => show_browse_tab(
                     ui, &selection, &current, &mut camera, &mut grid_state,
                     &mut tile_state, &mut manager, &data_dir, &mut ui_state,
+                    &cell_selection,
                 ),
                 Tab::Bundles => show_bundles_tab(ui, &mut manager, &data_dir, &mut ui_state),
             }
@@ -76,6 +78,7 @@ fn show_browse_tab(
     manager: &mut ManagerState,
     data_dir: &DataDir,
     ui_state: &mut UiState,
+    cell_selection: &CellSelection,
 ) {
     let Some(ref file_ref) = selection.selected_path else {
         ui.label("Nothing selected. Browse the file tree on the left.");
@@ -117,7 +120,15 @@ fn show_browse_tab(
         ui.separator();
     }
 
-    // -- Tags --
+    // -- Cell info + cell tags (when a cell is selected) --
+    if let Some((col, row)) = cell_selection.selected {
+        if grid_state.visible && grid_state.cell_w > 0 && grid_state.cell_h > 0 {
+            show_cell_section(ui, file_ref, col, row, grid_state, manager, data_dir, ui_state);
+            ui.separator();
+        }
+    }
+
+    // -- Tags (file-level) --
     show_tags_section(ui, file_ref, manager, data_dir, ui_state);
 }
 
@@ -389,6 +400,53 @@ fn show_tags_section(
                     entry.remove(tag);
                     if entry.is_empty() {
                         manager.data.tags.remove(&file_key);
+                    }
+                } else {
+                    entry.insert(tag.clone());
+                }
+                manager.dirty = true;
+                data::save_and_status(manager, data_dir, ui_state);
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Cell section
+// ---------------------------------------------------------------------------
+
+fn show_cell_section(
+    ui: &mut egui::Ui,
+    file_ref: &FileRef,
+    col: u32,
+    row: u32,
+    grid_state: &GridState,
+    manager: &mut ManagerState,
+    data_dir: &DataDir,
+    ui_state: &mut UiState,
+) {
+    let file_key = file_ref.to_string_repr();
+    let cell_key = format!("{file_key}@{col},{row}");
+
+    ui.heading("Cell");
+    ui.label(format!(
+        "Col {col}, Row {row} ({}x{} px)",
+        grid_state.cell_w, grid_state.cell_h
+    ));
+
+    // Cell tags
+    let all_tags = manager.data.all_known_tags();
+    let active_tags = manager.data.tags.get(&cell_key).cloned().unwrap_or_default();
+
+    ui.horizontal_wrapped(|ui| {
+        for tag in &all_tags {
+            let is_active = active_tags.contains(tag);
+            if ui.selectable_label(is_active, tag).clicked() {
+                let entry = manager.data.tags.entry(cell_key.clone()).or_default();
+                if is_active {
+                    entry.remove(tag);
+                    if entry.is_empty() {
+                        manager.data.tags.remove(&cell_key);
                     }
                 } else {
                     entry.insert(tag.clone());

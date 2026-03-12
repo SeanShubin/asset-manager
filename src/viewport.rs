@@ -10,6 +10,7 @@ use crate::image_loader;
 use crate::resources::*;
 
 const GRID_COLOR: Color = Color::srgba(1.0, 1.0, 0.0, 0.4);
+const CELL_HIGHLIGHT_COLOR: Color = Color::srgba(0.0, 1.0, 1.0, 0.6);
 const ZOOM_FACTOR: f32 = 1.15;
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,7 @@ pub fn pan_zoom(
 
         if mouse_buttons.just_pressed(MouseButton::Left) {
             camera.dragging = true;
+            camera.drag_distance = 0.0;
             camera.last_cursor = windows.single().ok().and_then(|w| w.cursor_position());
         }
     }
@@ -108,11 +110,75 @@ pub fn pan_zoom(
         let cursor = windows.single().ok().and_then(|w| w.cursor_position());
         if let (Some(current), Some(last)) = (cursor, camera.last_cursor) {
             let delta = current - last;
+            camera.drag_distance += delta.length();
             let zoom = camera.zoom;
             camera.pan += Vec2::new(delta.x, -delta.y) / zoom;
         }
         camera.last_cursor = cursor;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cell click detection
+// ---------------------------------------------------------------------------
+
+const CLICK_THRESHOLD: f32 = 3.0;
+
+pub fn cell_click(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Res<CameraState>,
+    grid_state: Res<GridState>,
+    current: Res<CurrentImage>,
+    pointer: Res<EguiPointerState>,
+    mut cell_selection: ResMut<CellSelection>,
+) {
+    if !mouse_buttons.just_released(MouseButton::Left) {
+        return;
+    }
+
+    // Only select cells when grid is visible and click wasn't a drag
+    if !grid_state.visible || camera.drag_distance > CLICK_THRESHOLD || pointer.over_ui {
+        return;
+    }
+
+    let cw = grid_state.cell_w;
+    let ch = grid_state.cell_h;
+    if cw == 0 || ch == 0 || current.width == 0 || current.height == 0 {
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+
+    // Convert screen position to world position
+    // Bevy renders to the full window; camera center is at window center
+    let screen_center_x = window.width() / 2.0;
+    let screen_center_y = window.height() / 2.0;
+    let safe_zoom = camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    let world_x = (cursor_pos.x - screen_center_x) / safe_zoom - camera.pan.x;
+    let world_y = -((cursor_pos.y - screen_center_y) / safe_zoom + camera.pan.y);
+
+    // Image coords: origin at top-left of image
+    let img_w = current.width as f32;
+    let img_h = current.height as f32;
+    let img_x = world_x + img_w / 2.0;
+    let img_y = img_h / 2.0 - world_y;
+
+    if img_x < 0.0 || img_y < 0.0 || img_x >= img_w || img_y >= img_h {
+        // Clicked outside the image — deselect cell
+        cell_selection.selected = None;
+        return;
+    }
+
+    let col = (img_x / cw as f32) as u32;
+    let row = (img_y / ch as f32) as u32;
+
+    cell_selection.selected = Some((col, row));
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +293,7 @@ pub fn grid_keyboard(
 pub fn draw_grid(
     grid_state: Res<GridState>,
     current: Res<CurrentImage>,
+    cell_selection: Res<CellSelection>,
     mut gizmos: Gizmos,
 ) {
     if !grid_state.visible {
@@ -258,6 +325,18 @@ pub fn draw_grid(
         let y = top - r as f32 * ch;
         gizmos.line_2d(Vec2::new(left, y), Vec2::new(left + w, y), GRID_COLOR);
     }
+
+    // Highlight selected cell
+    if let Some((col, row)) = cell_selection.selected {
+        let x0 = left + col as f32 * cw;
+        let y0 = top - row as f32 * ch;
+        let x1 = x0 + cw;
+        let y1 = y0 - ch;
+        gizmos.line_2d(Vec2::new(x0, y0), Vec2::new(x1, y0), CELL_HIGHLIGHT_COLOR);
+        gizmos.line_2d(Vec2::new(x1, y0), Vec2::new(x1, y1), CELL_HIGHLIGHT_COLOR);
+        gizmos.line_2d(Vec2::new(x1, y1), Vec2::new(x0, y1), CELL_HIGHLIGHT_COLOR);
+        gizmos.line_2d(Vec2::new(x0, y1), Vec2::new(x0, y0), CELL_HIGHLIGHT_COLOR);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -269,12 +348,18 @@ pub fn update_tile_preview(
     camera_state: Res<CameraState>,
     tile_state: Res<TileState>,
     current: Res<CurrentImage>,
+    grid_state: Res<GridState>,
+    cell_selection: Res<CellSelection>,
     mut images: ResMut<Assets<Image>>,
     existing_tiles: Query<Entity, With<TileSprite>>,
     preview_sprite: Query<&Sprite, With<PreviewSprite>>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    if !camera_state.is_changed() && !tile_state.is_changed() && !current.is_changed() {
+    if !camera_state.is_changed()
+        && !tile_state.is_changed()
+        && !current.is_changed()
+        && !cell_selection.is_changed()
+    {
         return;
     }
 
@@ -306,36 +391,73 @@ pub fn update_tile_preview(
 
     let handle = image_loader::rgba_to_bevy_handle(rgba, &mut images);
 
+    // Determine tile source rect and size
+    let (tile_rect, tile_w, tile_h) =
+        if let Some((col, row)) = cell_selection.selected {
+            let cw = grid_state.cell_w as f32;
+            let ch = grid_state.cell_h as f32;
+            if cw > 0.0 && ch > 0.0 {
+                let x = col as f32 * cw;
+                let y = row as f32 * ch;
+                (
+                    bevy::math::Rect::new(x + TILE_INSET, y + TILE_INSET, x + cw - TILE_INSET, y + ch - TILE_INSET),
+                    cw,
+                    ch,
+                )
+            } else {
+                (bevy::math::Rect::new(TILE_INSET, TILE_INSET, w - TILE_INSET, h - TILE_INSET), w, h)
+            }
+        } else {
+            (bevy::math::Rect::new(TILE_INSET, TILE_INSET, w - TILE_INSET, h - TILE_INSET), w, h)
+        };
+
     // Use visible viewport area (window minus panels) for tile count
     let safe_zoom = camera_state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
     let view_w = (window.width() - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH).max(1.0);
     let view_h = (window.height() - STATUS_BAR_HEIGHT).max(1.0);
     let world_w = view_w / safe_zoom;
     let world_h = view_h / safe_zoom;
-    let cols = ((world_w / w).ceil() as i32 + 2).max(3);
-    let rows = ((world_h / h).ceil() as i32 + 2).max(3);
-
-    let rect = bevy::math::Rect::new(TILE_INSET, TILE_INSET, w - TILE_INSET, h - TILE_INSET);
+    let cols = ((world_w / tile_w).ceil() as i32 + 2).max(3);
+    let rows = ((world_h / tile_h).ceil() as i32 + 2).max(3);
 
     for row in 0..rows {
         for col in 0..cols {
             if row == rows / 2 && col == cols / 2 {
                 continue;
             }
-            let offset_x = (col - cols / 2) as f32 * w;
-            let offset_y = -(row - rows / 2) as f32 * h;
+            let offset_x = (col - cols / 2) as f32 * tile_w;
+            let offset_y = -(row - rows / 2) as f32 * tile_h;
             commands.spawn((
                 TileSprite,
                 Sprite {
                     image: handle.clone(),
-                    rect: Some(rect),
-                    custom_size: Some(Vec2::new(w, h)),
+                    rect: Some(tile_rect),
+                    custom_size: Some(Vec2::new(tile_w, tile_h)),
                     ..default()
                 },
                 Transform::from_xyz(offset_x, offset_y, -0.1),
                 NoFrustumCulling,
             ));
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clear cell selection on file change
+// ---------------------------------------------------------------------------
+
+pub fn clear_cell_on_file_change(
+    selection: Res<TreeSelection>,
+    mut cell_selection: ResMut<CellSelection>,
+) {
+    let current_key = selection
+        .selected_path
+        .as_ref()
+        .map(|f| f.to_string_repr())
+        .unwrap_or_default();
+    if current_key != cell_selection.file_key {
+        cell_selection.file_key = current_key;
+        cell_selection.selected = None;
     }
 }
 

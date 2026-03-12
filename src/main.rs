@@ -83,6 +83,7 @@ fn main() {
         .insert_resource(tile_state)
         .insert_resource(tree_state)
         .init_resource::<CurrentImage>()
+        .init_resource::<CellSelection>()
         .insert_resource(UiState {
             active_tab,
             ..Default::default()
@@ -92,7 +93,9 @@ fn main() {
             Update,
             (
                 viewport::update_preview_sprite,
+                viewport::clear_cell_on_file_change,
                 viewport::pan_zoom,
+                viewport::cell_click,
                 viewport::grid_keyboard,
                 tree_panel::file_navigation,
                 viewport::auto_fit_zoom,

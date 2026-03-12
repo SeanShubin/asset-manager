@@ -132,6 +132,8 @@ pub struct CameraState {
     pub last_cursor: Option<Vec2>,
     pub snap_zoom: bool,
     pub fit_requested: bool,
+    /// Accumulated pixel distance during current drag (to distinguish click vs drag)
+    pub drag_distance: f32,
 }
 
 impl Default for CameraState {
@@ -143,6 +145,7 @@ impl Default for CameraState {
             last_cursor: None,
             snap_zoom: false,
             fit_requested: true,
+            drag_distance: 0.0,
         }
     }
 }
@@ -156,6 +159,18 @@ pub struct GridState {
     pub visible: bool,
     pub cell_w: u32,
     pub cell_h: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Cell selection
+// ---------------------------------------------------------------------------
+
+#[derive(Resource, Default)]
+pub struct CellSelection {
+    /// Currently selected cell (col, row) — None when no cell selected
+    pub selected: Option<(u32, u32)>,
+    /// Tracks which file the cell belongs to, so we clear on actual file change
+    pub file_key: String,
 }
 
 // ---------------------------------------------------------------------------
