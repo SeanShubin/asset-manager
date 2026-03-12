@@ -174,6 +174,34 @@ pub struct CellSelection {
 }
 
 // ---------------------------------------------------------------------------
+// Animation preview
+// ---------------------------------------------------------------------------
+
+/// Walk cycle sequence: idle(1) → walk1(0) → idle(1) → walk2(2)
+pub const WALK_CYCLE: [usize; 4] = [1, 0, 1, 2];
+
+/// RPG Maker default: stride 12.5 / move_speed 125 = 100ms per frame
+pub const WALK_FRAME_DURATION: f32 = 0.1;
+
+/// Column offsets within a 3-col block: [walk1, idle, walk2]
+pub const WALK_FRAME_COL: [u32; 3] = [0, 1, 2];
+
+#[derive(Resource, Default)]
+pub struct AnimationPreview {
+    pub playing: bool,
+    /// Position in WALK_CYCLE (0..4)
+    pub cycle_pos: usize,
+    pub timer: f32,
+}
+
+impl AnimationPreview {
+    /// Check if a grid is a valid 4dir-walk grid (cols multiple of 3, rows multiple of 4).
+    pub fn is_valid_grid(grid_cols: u32, grid_rows: u32) -> bool {
+        grid_cols >= 3 && grid_rows >= 4 && grid_cols % 3 == 0 && grid_rows % 4 == 0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tile preview state
 // ---------------------------------------------------------------------------
 

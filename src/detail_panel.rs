@@ -24,6 +24,7 @@ pub fn detail_panel_ui(
     data_dir: Res<DataDir>,
     time: Res<Time>,
     cell_selection: Res<CellSelection>,
+    mut anim_preview: ResMut<AnimationPreview>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -57,9 +58,12 @@ pub fn detail_panel_ui(
                 Tab::Browse => show_browse_tab(
                     ui, &selection, &current, &mut camera, &mut grid_state,
                     &mut tile_state, &mut manager, &data_dir, &mut ui_state,
-                    &cell_selection,
+                    &cell_selection, &mut anim_preview,
                 ),
-                Tab::Bundles => show_bundles_tab(ui, &mut manager, &data_dir, &mut ui_state),
+                Tab::Bundles => {
+                    stop_anim_if_playing(&mut anim_preview, &mut camera);
+                    show_bundles_tab(ui, &mut manager, &data_dir, &mut ui_state);
+                }
             }
         });
 }
@@ -79,6 +83,7 @@ fn show_browse_tab(
     data_dir: &DataDir,
     ui_state: &mut UiState,
     cell_selection: &CellSelection,
+    anim_preview: &mut AnimationPreview,
 ) {
     let Some(ref file_ref) = selection.selected_path else {
         ui.label("Nothing selected. Browse the file tree on the left.");
@@ -126,6 +131,37 @@ fn show_browse_tab(
             show_cell_section(ui, file_ref, col, row, grid_state, manager, data_dir, ui_state);
             ui.separator();
         }
+    }
+
+    // -- 4dir-walk animation preview --
+    let anim_allowed = current.width > 0
+        && grid_state.cell_w > 0
+        && grid_state.cell_h > 0
+        && {
+            let file_key = file_ref.to_string_repr();
+            let file_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
+            file_tags.contains("4dir-walk")
+                && AnimationPreview::is_valid_grid(
+                    current.width / grid_state.cell_w,
+                    current.height / grid_state.cell_h,
+                )
+        };
+
+    if anim_allowed {
+        ui.heading("4dir Walk");
+        if anim_preview.playing {
+            if ui.button("Stop").clicked() {
+                stop_anim_if_playing(anim_preview, camera);
+            }
+        } else if ui.button("Play").clicked() {
+            anim_preview.playing = true;
+            anim_preview.cycle_pos = 0;
+            anim_preview.timer = 0.0;
+            camera.fit_requested = true;
+        }
+        ui.separator();
+    } else {
+        stop_anim_if_playing(anim_preview, camera);
     }
 
     // -- Tags (file-level) --
@@ -684,6 +720,15 @@ fn show_bundles_tab(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn stop_anim_if_playing(anim: &mut AnimationPreview, camera: &mut CameraState) {
+    if anim.playing {
+        anim.playing = false;
+        anim.cycle_pos = 0;
+        anim.timer = 0.0;
+        camera.fit_requested = true;
+    }
+}
 
 fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 {

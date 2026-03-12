@@ -84,6 +84,7 @@ fn main() {
         .insert_resource(tree_state)
         .init_resource::<CurrentImage>()
         .init_resource::<CellSelection>()
+        .init_resource::<AnimationPreview>()
         .insert_resource(UiState {
             active_tab,
             ..Default::default()
@@ -96,6 +97,7 @@ fn main() {
                 viewport::clear_cell_on_file_change,
                 viewport::pan_zoom,
                 viewport::cell_click,
+                viewport::animation_tick,
                 viewport::grid_keyboard,
                 tree_panel::file_navigation,
                 viewport::auto_fit_zoom,
