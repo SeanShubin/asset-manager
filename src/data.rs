@@ -107,6 +107,11 @@ pub struct ManagerData {
     pub grids: BTreeMap<String, GridDef>,
     #[serde(default)]
     pub bundles: BTreeMap<String, BundleDef>,
+    #[serde(default)]
+    pub export_roots: BTreeSet<String>,
+    /// Registered tag names
+    #[serde(default)]
+    pub tag_names: BTreeSet<String>,
     /// Tags per file — key is FileRef string repr, value is set of tag strings
     #[serde(default)]
     pub tags: BTreeMap<String, BTreeSet<String>>,
@@ -132,14 +137,10 @@ pub struct GridDef {
 pub struct BundleDef {
     #[serde(default)]
     pub export_path: String,
+    /// Tag filter: true = tag must be present, false = tag must be absent.
+    /// Tags not in the map are ignored (don't care).
     #[serde(default)]
-    pub files: Vec<BundleFile>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BundleFile {
-    pub source: String,
-    pub dest: String,
+    pub tag_filter: BTreeMap<String, bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,7 @@ pub enum DirRole {
     AssetRoot,
     CreatorRoot,
     AssetPackRoot,
+    ExportRoot,
     None,
 }
 
@@ -163,6 +165,8 @@ impl ManagerData {
             DirRole::CreatorRoot
         } else if self.asset_pack_roots.contains_key(&normalized) {
             DirRole::AssetPackRoot
+        } else if self.export_roots.contains(&normalized) {
+            DirRole::ExportRoot
         } else {
             DirRole::None
         }
@@ -174,6 +178,63 @@ impl ManagerData {
             .iter()
             .find(|root| normalized.starts_with(root.as_str()) && normalized.len() > root.len())
             .cloned()
+    }
+
+    /// All known tags: registered names + any actually applied to files, sorted.
+    pub fn all_known_tags(&self) -> Vec<String> {
+        let mut all = self.tag_names.clone();
+        for tags_set in self.tags.values() {
+            for tag in tags_set {
+                all.insert(tag.clone());
+            }
+        }
+        all.into_iter().collect()
+    }
+
+    /// Count how many files have the given tag.
+    pub fn tag_count(&self, tag: &str) -> usize {
+        self.tags.values().filter(|ts| ts.contains(tag)).count()
+    }
+
+    /// Delete a tag everywhere: tag_names, all file tags, all bundle filters.
+    pub fn delete_tag(&mut self, tag: &str) {
+        self.tag_names.remove(tag);
+        for file_tags in self.tags.values_mut() {
+            file_tags.remove(tag);
+        }
+        // Clean up empty tag sets
+        self.tags.retain(|_, ts| !ts.is_empty());
+        for bundle in self.bundles.values_mut() {
+            bundle.tag_filter.remove(tag);
+        }
+    }
+
+    /// Returns file keys matching a bundle's tag filter.
+    /// true = tag must be present, false = tag must be absent.
+    /// Bundles with no true entries match nothing.
+    pub fn query_bundle_files(&self, bundle: &BundleDef) -> Vec<String> {
+        if !bundle.tag_filter.values().any(|&v| v) {
+            return Vec::new();
+        }
+
+        let mut results: Vec<String> = self
+            .tags
+            .iter()
+            .filter(|(_, file_tags)| {
+                for (tag, &required) in &bundle.tag_filter {
+                    if required && !file_tags.contains(tag) {
+                        return false;
+                    }
+                    if !required && file_tags.contains(tag) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        results.sort();
+        results
     }
 
     pub fn is_inside_creator_root(&self, path: &str) -> Option<String> {
@@ -214,6 +275,23 @@ pub fn load_data(data_dir: &Path) -> ManagerData {
                 path.display()
             );
             ManagerData::default()
+        }
+    }
+}
+
+/// Save data and update UI status message.
+pub fn save_and_status(
+    manager: &mut crate::resources::ManagerState,
+    data_dir: &crate::resources::DataDir,
+    ui_state: &mut crate::resources::UiState,
+) {
+    match save_data(&data_dir.path, &manager.data) {
+        Ok(()) => {
+            manager.dirty = false;
+            ui_state.status_message = Some(("Saved.".into(), 3.0));
+        }
+        Err(e) => {
+            ui_state.status_message = Some((format!("Save failed: {e}"), 5.0));
         }
     }
 }

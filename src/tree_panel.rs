@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use std::path::{Path, PathBuf};
 
-use crate::data::{DirRole, FileRef, ManagerData};
+use crate::data::{self, DirRole, FileRef, ManagerData};
 use crate::image_loader;
 use crate::resources::*;
 
@@ -29,8 +29,10 @@ pub fn tree_panel_ui(
     mut current: ResMut<CurrentImage>,
     mut camera: ResMut<CameraState>,
     mut grid_state: ResMut<GridState>,
-    manager: Res<ManagerState>,
+    mut manager: ResMut<ManagerState>,
     mut tree_state: ResMut<TreeState>,
+    data_dir: Res<DataDir>,
+    mut ui_state: ResMut<UiState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -44,7 +46,8 @@ pub fn tree_panel_ui(
             // Bookmarks — quick-jump to designated roots
             let has_bookmarks = !manager.data.asset_roots.is_empty()
                 || !manager.data.creator_roots.is_empty()
-                || !manager.data.asset_pack_roots.is_empty();
+                || !manager.data.asset_pack_roots.is_empty()
+                || !manager.data.export_roots.is_empty();
 
             if has_bookmarks {
                 ui.separator();
@@ -71,6 +74,14 @@ pub fn tree_panel_ui(
                         let short = short_name(path);
                         let label = egui::RichText::new(format!("[PR] {short}"))
                             .color(egui::Color32::from_rgb(200, 130, 255));
+                        if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                            expand_path_ancestors(path, &mut tree_state);
+                        }
+                    }
+                    for path in &manager.data.export_roots {
+                        let short = short_name(path);
+                        let label = egui::RichText::new(format!("[EX] {short}"))
+                            .color(egui::Color32::from_rgb(255, 200, 100));
                         if ui.add(egui::Button::new(label).frame(false)).clicked() {
                             expand_path_ancestors(path, &mut tree_state);
                         }
@@ -124,6 +135,64 @@ pub fn tree_panel_ui(
                 let count = tree_state.search_results.len();
                 let root_short = short_name(&tree_state.search_root);
                 ui.label(format!("{count} matches under {root_short}"));
+
+                // Mass tagging — show tag buttons for all results
+                let all_tags = manager.data.all_known_tags();
+                let result_keys: Vec<String> = tree_state
+                    .search_results
+                    .iter()
+                    .map(|f| f.to_string_repr())
+                    .collect();
+
+                ui.horizontal_wrapped(|ui| {
+                    for tag in &all_tags {
+                        // Count how many results have this tag
+                        let have_count = result_keys
+                            .iter()
+                            .filter(|k| {
+                                manager
+                                    .data
+                                    .tags
+                                    .get(*k)
+                                    .map_or(false, |t| t.contains(tag))
+                            })
+                            .count();
+                        let total = result_keys.len();
+
+                        let (indicator, color) = if have_count == total {
+                            ("[+]", egui::Color32::from_rgb(100, 220, 100))
+                        } else if have_count > 0 {
+                            ("[~]", egui::Color32::YELLOW)
+                        } else {
+                            ("[ ]", egui::Color32::GRAY)
+                        };
+
+                        let label = format!("{indicator} {tag}");
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new(&label).color(color).size(11.0),
+                            ))
+                            .clicked()
+                        {
+                            // If all have it, remove from all; otherwise add to all
+                            let add = have_count < total;
+                            for key in &result_keys {
+                                let entry =
+                                    manager.data.tags.entry(key.clone()).or_default();
+                                if add {
+                                    entry.insert(tag.clone());
+                                } else {
+                                    entry.remove(tag);
+                                    if entry.is_empty() {
+                                        manager.data.tags.remove(key);
+                                    }
+                                }
+                            }
+                            manager.dirty = true;
+                            data::save_and_status(&mut manager, &data_dir, &mut ui_state);
+                        }
+                    }
+                });
 
                 // Clone results to avoid borrow conflict with tree_state
                 let results: Vec<FileRef> = tree_state.search_results.clone();
@@ -356,6 +425,10 @@ fn show_dir(
             });
 
             track_expansion(response.openness, &node_key, ctx.tree_state);
+
+            if response.header_response.clicked() {
+                ctx.selection.selected_path = Some(FileRef::Disk(file.clone()));
+            }
         } else {
             let icon = if is_image { "\u{1F5BC}" } else { "\u{1F4C4}" };
             let label_text = format!("  {icon} {name}");
@@ -471,6 +544,13 @@ fn show_zip_entries(
         });
 
         track_expansion(response.openness, &node_key, ctx.tree_state);
+
+        if response.header_response.clicked() {
+            ctx.selection.selected_path = Some(FileRef::ZipEntry {
+                zip_path: zip_path.to_path_buf(),
+                entry: subdir.clone(),
+            });
+        }
     }
 
     for file_entry in &files {
@@ -633,6 +713,14 @@ fn show_nested_zip_entries(
         });
 
         track_expansion(response.openness, &node_key, ctx.tree_state);
+
+        if response.header_response.clicked() {
+            ctx.selection.selected_path = Some(FileRef::NestedZipEntry {
+                outer_zip: outer_zip.to_path_buf(),
+                inner_entry: inner_entry.to_string(),
+                entry: subdir.clone(),
+            });
+        }
     }
 
     for file_entry in &files {
@@ -1163,6 +1251,10 @@ fn format_dir_label(name: &str, role: &DirRole) -> egui::RichText {
         DirRole::AssetPackRoot => {
             egui::RichText::new(format!("\u{1F4C1} {name} [PR]"))
                 .color(egui::Color32::from_rgb(200, 130, 255))
+        }
+        DirRole::ExportRoot => {
+            egui::RichText::new(format!("\u{1F4C1} {name} [EX]"))
+                .color(egui::Color32::from_rgb(255, 200, 100))
         }
         DirRole::None => {
             egui::RichText::new(format!("\u{1F4C1} {name}"))

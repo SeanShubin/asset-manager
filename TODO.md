@@ -58,7 +58,7 @@ Zip-internal paths use `//` separator: `D:/foo/pack.zip//sprites/hero.png`
 - [x] Left/right arrow file navigation
 - [x] Tags (toggleable: 4dir-walk, 8dir-walk, etc.)
 - [x] Mouse wheel ownership (egui panels vs viewport)
-- [ ] Hierarchy validation feedback in status bar
+- [x] ~~Hierarchy validation feedback~~ (cut — UI already prevents invalid states)
 
 ### Phase 4: Zip Support
 - [x] Detect `.zip` files in tree, render as expandable directories

@@ -45,7 +45,7 @@ pub fn load_image(file_ref: &FileRef) -> Result<LoadedImage, String> {
     })
 }
 
-fn load_raw_bytes(file_ref: &FileRef) -> Result<Vec<u8>, String> {
+pub fn load_raw_bytes(file_ref: &FileRef) -> Result<Vec<u8>, String> {
     match file_ref {
         FileRef::Disk(path) => {
             std::fs::read(path).map_err(|e| format!("Read error: {e}"))

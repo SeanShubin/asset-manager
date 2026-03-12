@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use crate::data::{self, DirRole, FileRef, GridDef};
+use crate::export;
 use crate::grid;
 use crate::resources::*;
 
@@ -56,7 +57,7 @@ pub fn detail_panel_ui(
                     ui, &selection, &current, &mut camera, &mut grid_state,
                     &mut tile_state, &mut manager, &data_dir, &mut ui_state,
                 ),
-                Tab::Bundles => show_bundles_tab(ui),
+                Tab::Bundles => show_bundles_tab(ui, &mut manager, &data_dir, &mut ui_state),
             }
         });
 }
@@ -106,13 +107,9 @@ fn show_browse_tab(
 
     ui.separator();
 
-    // -- Hierarchy designation (disk directories only) --
-    if let FileRef::Disk(path) = file_ref {
-        if path.is_dir() {
-            show_hierarchy(ui, path, manager, data_dir, ui_state);
-            ui.separator();
-        }
-    }
+    // -- Hierarchy designation --
+    show_hierarchy(ui, file_ref, manager, data_dir, ui_state);
+    ui.separator();
 
     // -- Grid editor (when an image is loaded) --
     if current.width > 0 {
@@ -130,70 +127,93 @@ fn show_browse_tab(
 
 fn show_hierarchy(
     ui: &mut egui::Ui,
-    path: &std::path::Path,
+    file_ref: &FileRef,
     manager: &mut ManagerState,
     data_dir: &DataDir,
     ui_state: &mut UiState,
 ) {
-    let normalized = path.to_string_lossy().replace('\\', "/");
+    let normalized = file_ref.to_string_repr();
     let current_role = manager.data.classify_dir(&normalized);
 
-    ui.heading("Directory Role");
+    // Only disk directories can be asset/creator/export roots
+    let is_disk_dir = matches!(file_ref, FileRef::Disk(p) if p.is_dir());
+
+    ui.heading("Role");
 
     match current_role {
         DirRole::AssetRoot => {
             ui.colored_label(
                 egui::Color32::from_rgb(100, 220, 100),
-                "This is an Asset Root",
+                "Asset Root",
             );
             if ui.button("Remove Asset Root").clicked() {
                 manager.data.asset_roots.remove(&normalized);
                 manager.dirty = true;
-                save_and_status(manager, data_dir, ui_state);
+                data::save_and_status(manager, data_dir, ui_state);
             }
         }
         DirRole::CreatorRoot => {
             ui.colored_label(
                 egui::Color32::from_rgb(100, 160, 255),
-                "This is a Creator Root",
+                "Creator Root",
             );
             if ui.button("Remove Creator Root").clicked() {
                 manager.data.creator_roots.remove(&normalized);
                 manager.dirty = true;
-                save_and_status(manager, data_dir, ui_state);
+                data::save_and_status(manager, data_dir, ui_state);
             }
         }
         DirRole::AssetPackRoot => {
             ui.colored_label(
                 egui::Color32::from_rgb(200, 130, 255),
-                "This is an Asset Pack Root",
+                "Asset Pack Root",
             );
             if ui.button("Remove Asset Pack Root").clicked() {
                 manager.data.asset_pack_roots.remove(&normalized);
                 manager.dirty = true;
-                save_and_status(manager, data_dir, ui_state);
+                data::save_and_status(manager, data_dir, ui_state);
+            }
+        }
+        DirRole::ExportRoot => {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 200, 100),
+                "Export Root",
+            );
+            if ui.button("Remove Export Root").clicked() {
+                manager.data.export_roots.remove(&normalized);
+                manager.dirty = true;
+                data::save_and_status(manager, data_dir, ui_state);
             }
         }
         DirRole::None => {
-            if ui.button("Mark as Asset Root").clicked() {
-                manager.data.asset_roots.insert(normalized.clone());
-                manager.dirty = true;
-                save_and_status(manager, data_dir, ui_state);
-            }
-
-            if let Some(asset_root) = manager.data.is_inside_asset_root(&normalized) {
-                if ui.button("Mark as Creator Root").clicked() {
-                    manager.data.creator_roots.insert(
-                        normalized.clone(),
-                        data::CreatorRootEntry {
-                            asset_root: asset_root.clone(),
-                        },
-                    );
+            if is_disk_dir {
+                if ui.button("Mark as Asset Root").clicked() {
+                    manager.data.asset_roots.insert(normalized.clone());
                     manager.dirty = true;
-                    save_and_status(manager, data_dir, ui_state);
+                    data::save_and_status(manager, data_dir, ui_state);
+                }
+
+                if let Some(asset_root) = manager.data.is_inside_asset_root(&normalized) {
+                    if ui.button("Mark as Creator Root").clicked() {
+                        manager.data.creator_roots.insert(
+                            normalized.clone(),
+                            data::CreatorRootEntry {
+                                asset_root: asset_root.clone(),
+                            },
+                        );
+                        manager.dirty = true;
+                        data::save_and_status(manager, data_dir, ui_state);
+                    }
+                }
+
+                if ui.button("Mark as Export Root").clicked() {
+                    manager.data.export_roots.insert(normalized.clone());
+                    manager.dirty = true;
+                    data::save_and_status(manager, data_dir, ui_state);
                 }
             }
 
+            // Asset pack root: anything inside a creator root (dirs, zips, zip subdirs)
             if let Some(creator_root) = manager.data.is_inside_creator_root(&normalized) {
                 if ui.button("Mark as Asset Pack Root").clicked() {
                     manager.data.asset_pack_roots.insert(
@@ -203,7 +223,7 @@ fn show_hierarchy(
                         },
                     );
                     manager.dirty = true;
-                    save_and_status(manager, data_dir, ui_state);
+                    data::save_and_status(manager, data_dir, ui_state);
                 }
             }
         }
@@ -356,18 +376,7 @@ fn show_tags_section(
     ui.heading("Tags");
 
     let file_key = file_ref.to_string_repr();
-
-    // Collect all known tags: seeds + any used across all files
-    let seed_tags = &["4dir-walk", "8dir-walk"];
-    let mut all_tags: Vec<String> = seed_tags.iter().map(|s| s.to_string()).collect();
-    for tags_set in manager.data.tags.values() {
-        for tag in tags_set {
-            if !all_tags.contains(tag) {
-                all_tags.push(tag.clone());
-            }
-        }
-    }
-    all_tags.sort();
+    let all_tags = manager.data.all_known_tags();
 
     let active_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
 
@@ -385,19 +394,233 @@ fn show_tags_section(
                     entry.insert(tag.clone());
                 }
                 manager.dirty = true;
-                save_and_status(manager, data_dir, ui_state);
+                data::save_and_status(manager, data_dir, ui_state);
             }
         }
     });
 }
 
 // ---------------------------------------------------------------------------
-// Bundles tab (placeholder)
+// Bundles tab
 // ---------------------------------------------------------------------------
 
-fn show_bundles_tab(ui: &mut egui::Ui) {
+fn show_bundles_tab(
+    ui: &mut egui::Ui,
+    manager: &mut ManagerState,
+    data_dir: &DataDir,
+    ui_state: &mut UiState,
+) {
+    // -- Tag management --
+    ui.heading("Tags");
+
+    ui.horizontal(|ui| {
+        ui.text_edit_singleline(&mut ui_state.new_tag_name);
+        if ui.button("Add").clicked() && !ui_state.new_tag_name.trim().is_empty() {
+            let name = ui_state.new_tag_name.trim().to_string();
+            if manager.data.tag_names.insert(name) {
+                manager.dirty = true;
+                data::save_and_status(manager, data_dir, ui_state);
+            }
+            ui_state.new_tag_name.clear();
+        }
+    });
+
+    let all_tags = manager.data.all_known_tags();
+    let mut tag_to_delete: Option<String> = None;
+
+    for tag in &all_tags {
+        let count = manager.data.tag_count(tag);
+        ui.horizontal(|ui| {
+            ui.label(format!("{tag} ({count})"));
+            if ui
+                .small_button(egui::RichText::new("x").color(egui::Color32::from_rgb(255, 100, 100)))
+                .clicked()
+            {
+                tag_to_delete = Some(tag.clone());
+            }
+        });
+    }
+
+    if let Some(tag) = tag_to_delete {
+        manager.data.delete_tag(&tag);
+        manager.dirty = true;
+        data::save_and_status(manager, data_dir, ui_state);
+    }
+
+    ui.separator();
+
+    // -- Bundle management --
     ui.heading("Bundles");
-    ui.label("Bundle management coming soon.");
+
+    // Create new bundle
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        ui.text_edit_singleline(&mut ui_state.new_bundle_name);
+        if ui.button("Create").clicked() && !ui_state.new_bundle_name.trim().is_empty() {
+            let name = ui_state.new_bundle_name.trim().to_string();
+            if !manager.data.bundles.contains_key(&name) {
+                manager.data.bundles.insert(name, data::BundleDef::default());
+                manager.dirty = true;
+                data::save_and_status(manager, data_dir, ui_state);
+            }
+            ui_state.new_bundle_name.clear();
+        }
+    });
+
+    ui.separator();
+
+    let all_tags = manager.data.all_known_tags();
+
+    // Collect bundle names to iterate without borrow conflict
+    let bundle_names: Vec<String> = manager.data.bundles.keys().cloned().collect();
+    let mut to_delete: Option<String> = None;
+
+    let mut save_needed = false;
+
+    for bundle_name in &bundle_names {
+        let id = ui.make_persistent_id(format!("bundle_{bundle_name}"));
+
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| {
+                ui.label(egui::RichText::new(bundle_name).strong());
+            })
+            .body(|ui| {
+                let bundle = manager.data.bundles.get_mut(bundle_name).unwrap();
+
+                // Export root selection
+                ui.horizontal(|ui| {
+                    ui.label("Export to:");
+                    let export_roots: Vec<String> =
+                        manager.data.export_roots.iter().cloned().collect();
+                    if export_roots.is_empty() {
+                        ui.colored_label(egui::Color32::GRAY, "(no export roots defined)");
+                    } else {
+                        egui::ComboBox::from_id_salt(format!("export_root_{bundle_name}"))
+                            .selected_text(if bundle.export_path.is_empty() {
+                                "(none)"
+                            } else {
+                                &bundle.export_path
+                            })
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_value(
+                                        &mut bundle.export_path,
+                                        String::new(),
+                                        "(none)",
+                                    )
+                                    .clicked()
+                                {
+                                    save_needed = true;
+                                }
+                                for root in &export_roots {
+                                    if ui
+                                        .selectable_value(
+                                            &mut bundle.export_path,
+                                            root.clone(),
+                                            root,
+                                        )
+                                        .clicked()
+                                    {
+                                        save_needed = true;
+                                    }
+                                }
+                            });
+                    }
+                });
+
+                // Tag filter: absent (--) -> true (+) -> false (-) -> absent
+                ui.label("Tag filter:");
+                ui.horizontal_wrapped(|ui| {
+                    for tag in &all_tags {
+                        let state = bundle.tag_filter.get(tag).copied();
+                        let (prefix, color) = match state {
+                            None => ("--", egui::Color32::GRAY),
+                            Some(true) => ("+", egui::Color32::from_rgb(100, 220, 100)),
+                            Some(false) => ("-", egui::Color32::from_rgb(255, 100, 100)),
+                        };
+                        let label = format!("{prefix} {tag}");
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new(&label).color(color),
+                            ))
+                            .clicked()
+                        {
+                            match state {
+                                None => { bundle.tag_filter.insert(tag.clone(), true); }
+                                Some(true) => { bundle.tag_filter.insert(tag.clone(), false); }
+                                Some(false) => { bundle.tag_filter.remove(tag); }
+                            }
+                            save_needed = true;
+                        }
+                    }
+                });
+
+                // Snapshot for query (avoids borrow conflict with manager)
+                let bundle_snapshot = data::BundleDef {
+                    export_path: bundle.export_path.clone(),
+                    tag_filter: bundle.tag_filter.clone(),
+                };
+                let matched = manager.data.query_bundle_files(&bundle_snapshot);
+
+                // Matched files preview
+                ui.label(format!("{} matched files", matched.len()));
+                if !matched.is_empty() {
+                    egui::ScrollArea::vertical()
+                        .id_salt(format!("bundle_files_{bundle_name}"))
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for key in &matched {
+                                let file_ref = data::FileRef::from_string(key);
+                                ui.label(file_ref.display_name());
+                            }
+                        });
+                }
+
+                // Action buttons
+                ui.horizontal(|ui| {
+                    if ui.button("Export").clicked() {
+                        if bundle_snapshot.export_path.trim().is_empty() {
+                            ui_state.status_message =
+                                Some(("Set an export path first.".into(), 3.0));
+                        } else if matched.is_empty() {
+                            ui_state.status_message =
+                                Some(("No files match this bundle.".into(), 3.0));
+                        } else {
+                            match export::export_bundle(&bundle_snapshot.export_path, &matched) {
+                                Ok(count) => {
+                                    ui_state.status_message = Some((
+                                        format!("Exported {count} files."),
+                                        3.0,
+                                    ));
+                                }
+                                Err(e) => {
+                                    ui_state.status_message =
+                                        Some((format!("Export failed: {e}"), 5.0));
+                                }
+                            }
+                        }
+                    }
+                    if ui
+                        .button(egui::RichText::new("Delete").color(egui::Color32::from_rgb(255, 100, 100)))
+                        .clicked()
+                    {
+                        to_delete = Some(bundle_name.clone());
+                    }
+                });
+            });
+    }
+
+    if save_needed {
+        manager.dirty = true;
+        data::save_and_status(manager, data_dir, ui_state);
+    }
+
+    // Handle deletion outside the loop
+    if let Some(name) = to_delete {
+        manager.data.bundles.remove(&name);
+        manager.dirty = true;
+        data::save_and_status(manager, data_dir, ui_state);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -414,14 +637,3 @@ fn format_file_size(bytes: u64) -> String {
     }
 }
 
-fn save_and_status(manager: &mut ManagerState, data_dir: &DataDir, ui_state: &mut UiState) {
-    match data::save_data(&data_dir.path, &manager.data) {
-        Ok(()) => {
-            manager.dirty = false;
-            ui_state.status_message = Some(("Saved.".into(), 3.0));
-        }
-        Err(e) => {
-            ui_state.status_message = Some((format!("Save failed: {e}"), 5.0));
-        }
-    }
-}

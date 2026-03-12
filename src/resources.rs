@@ -205,6 +205,8 @@ pub struct UiState {
     pub active_tab: Tab,
     pub status_message: Option<(String, f64)>,
     pub show_shortcuts: bool,
+    pub new_bundle_name: String,
+    pub new_tag_name: String,
 }
 
 impl Default for UiState {
@@ -213,6 +215,8 @@ impl Default for UiState {
             active_tab: Tab::Browse,
             status_message: None,
             show_shortcuts: false,
+            new_bundle_name: String::new(),
+            new_tag_name: String::new(),
         }
     }
 }
