@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use std::path::PathBuf;
+use std::sync::{mpsc, Mutex};
 
 use crate::data::FileRef;
 use crate::ui_persist::PersistedUiState;
@@ -243,6 +244,23 @@ pub enum Tab {
     Bundles,
 }
 
+/// Progress update from a background export thread.
+pub enum ExportProgress {
+    /// (files_written_so_far, total_files)
+    Progress(usize, usize),
+    /// Export finished successfully — total files written.
+    Done(usize),
+    /// Export failed with an error message.
+    Failed(String),
+}
+
+/// An in-flight bundle export running on a background thread.
+pub struct ExportTask {
+    pub receiver: Mutex<mpsc::Receiver<ExportProgress>>,
+    pub total: usize,
+    pub written: usize,
+}
+
 #[derive(Resource)]
 pub struct UiState {
     pub active_tab: Tab,
@@ -250,6 +268,7 @@ pub struct UiState {
     pub show_shortcuts: bool,
     pub new_bundle_name: String,
     pub new_tag_name: String,
+    pub export_task: Option<ExportTask>,
 }
 
 impl Default for UiState {
@@ -260,6 +279,7 @@ impl Default for UiState {
             show_shortcuts: false,
             new_bundle_name: String::new(),
             new_tag_name: String::new(),
+            export_task: None,
         }
     }
 }

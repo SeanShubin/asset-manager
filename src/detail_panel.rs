@@ -504,6 +504,41 @@ fn show_bundles_tab(
     data_dir: &DataDir,
     ui_state: &mut UiState,
 ) {
+    // Poll background export task
+    if let Some(ref mut task) = ui_state.export_task {
+        use crate::resources::ExportProgress;
+        // Drain all available messages into a vec so we can drop the lock first
+        let msgs: Vec<_> = {
+            let rx = task.receiver.lock().unwrap();
+            rx.try_iter().collect()
+        };
+        for msg in msgs {
+            match msg {
+                ExportProgress::Progress(written, _total) => {
+                    task.written = written;
+                }
+                ExportProgress::Done(count) => {
+                    ui_state.status_message =
+                        Some((format!("Exported {count} files."), 3.0));
+                    task.written = task.total;
+                }
+                ExportProgress::Failed(e) => {
+                    ui_state.status_message =
+                        Some((format!("Export failed: {e}"), 5.0));
+                    task.total = 0; // sentinel for removal
+                }
+            }
+        }
+    }
+    // Remove finished/failed task
+    if ui_state
+        .export_task
+        .as_ref()
+        .is_some_and(|t| t.written >= t.total)
+    {
+        ui_state.export_task = None;
+    }
+
     // -- Tag management --
     ui.heading("Tags");
 
@@ -671,29 +706,34 @@ fn show_bundles_tab(
                 }
 
                 // Action buttons
+                let exporting = ui_state.export_task.is_some();
                 ui.horizontal(|ui| {
-                    if ui.button("Export").clicked() {
-                        if bundle_snapshot.export_path.trim().is_empty() {
-                            ui_state.status_message =
-                                Some(("Set an export path first.".into(), 3.0));
-                        } else if matched.is_empty() {
-                            ui_state.status_message =
-                                Some(("No files match this bundle.".into(), 3.0));
-                        } else {
-                            match export::export_bundle(&bundle_snapshot.export_path, &matched) {
-                                Ok(count) => {
-                                    ui_state.status_message = Some((
-                                        format!("Exported {count} files."),
-                                        3.0,
-                                    ));
-                                }
-                                Err(e) => {
-                                    ui_state.status_message =
-                                        Some((format!("Export failed: {e}"), 5.0));
+                    ui.add_enabled_ui(!exporting, |ui| {
+                        if ui.button("Export").clicked() {
+                            if bundle_snapshot.export_path.trim().is_empty() {
+                                ui_state.status_message =
+                                    Some(("Set an export path first.".into(), 3.0));
+                            } else if matched.is_empty() {
+                                ui_state.status_message =
+                                    Some(("No files match this bundle.".into(), 3.0));
+                            } else {
+                                match export::export_bundle_async(
+                                    &bundle_snapshot.export_path,
+                                    &matched,
+                                ) {
+                                    Ok(task) => {
+                                        ui_state.status_message =
+                                            Some(("Exporting\u{2026}".into(), 999.0));
+                                        ui_state.export_task = Some(task);
+                                    }
+                                    Err(e) => {
+                                        ui_state.status_message =
+                                            Some((format!("Export failed: {e}"), 5.0));
+                                    }
                                 }
                             }
                         }
-                    }
+                    });
                     if ui
                         .button(egui::RichText::new("Delete").color(egui::Color32::from_rgb(255, 100, 100)))
                         .clicked()
@@ -701,6 +741,20 @@ fn show_bundles_tab(
                         to_delete = Some(bundle_name.clone());
                     }
                 });
+
+                // Progress bar for in-flight export
+                if let Some(ref task) = ui_state.export_task {
+                    let fraction = if task.total > 0 {
+                        task.written as f32 / task.total as f32
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .text(format!("{} / {}", task.written, task.total))
+                            .animate(true),
+                    );
+                }
             });
     }
 

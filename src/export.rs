@@ -2,41 +2,61 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{mpsc, Mutex};
 
 use crate::data::FileRef;
 use crate::image_loader;
+use crate::resources::{ExportProgress, ExportTask};
 
-/// Export files to a flat directory. Returns the number of files written.
+/// Spawn a background thread that exports files and reports progress.
 ///
-/// Handles filename collisions by appending `_1`, `_2`, etc.
-pub fn export_bundle(export_path: &str, file_keys: &[String]) -> Result<usize, String> {
+/// Returns an `ExportTask` that the UI can poll each frame.
+pub fn export_bundle_async(export_path: &str, file_keys: &[String]) -> Result<ExportTask, String> {
     let dir = Path::new(export_path);
     std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create export dir: {e}"))?;
 
-    // Track used filenames to handle collisions
-    let mut name_counts: HashMap<String, usize> = HashMap::new();
-    let mut written = 0;
+    let total = file_keys.len();
+    let (tx, rx) = mpsc::channel();
 
-    for key in file_keys {
-        let file_ref = FileRef::from_string(key);
-        let bytes = match image_loader::load_raw_bytes(&file_ref) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Skipping {key}: {e}");
-                continue;
+    let keys: Vec<String> = file_keys.to_vec();
+    let dir_owned = dir.to_path_buf();
+
+    std::thread::spawn(move || {
+        let mut name_counts: HashMap<String, usize> = HashMap::new();
+        let mut written = 0usize;
+
+        for key in &keys {
+            let file_ref = FileRef::from_string(key);
+            let bytes = match image_loader::load_raw_bytes(&file_ref) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Skipping {key}: {e}");
+                    continue;
+                }
+            };
+
+            let original_name = file_ref.display_name();
+            let dest_name = unique_name(&original_name, &mut name_counts);
+            let dest_path = dir_owned.join(&dest_name);
+
+            if let Err(e) = std::fs::write(&dest_path, &bytes) {
+                let _ = tx.send(ExportProgress::Failed(
+                    format!("Write failed for {dest_name}: {e}"),
+                ));
+                return;
             }
-        };
+            written += 1;
+            let _ = tx.send(ExportProgress::Progress(written, total));
+        }
 
-        let original_name = file_ref.display_name();
-        let dest_name = unique_name(&original_name, &mut name_counts);
-        let dest_path = dir.join(&dest_name);
+        let _ = tx.send(ExportProgress::Done(written));
+    });
 
-        std::fs::write(&dest_path, &bytes)
-            .map_err(|e| format!("Write failed for {dest_name}: {e}"))?;
-        written += 1;
-    }
-
-    Ok(written)
+    Ok(ExportTask {
+        receiver: Mutex::new(rx),
+        total,
+        written: 0,
+    })
 }
 
 /// Generate a unique filename, appending `_1`, `_2`, etc. on collision.
