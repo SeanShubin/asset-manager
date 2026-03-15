@@ -137,6 +137,9 @@ pub struct GridDef {
 pub struct BundleDef {
     #[serde(default)]
     pub export_path: String,
+    /// Template for output file paths, e.g. `texture/{dir[0]}/{dir[1]}.{ext}`.
+    #[serde(default)]
+    pub export_template: String,
     /// Tag filter: true = tag must be present, false = tag must be absent.
     /// Tags not in the map are ignored (don't care).
     #[serde(default)]

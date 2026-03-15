@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 regex = "1"
 zip = "2"
+unrar = "0.5"
 
 # Enable fast compiles for development (Bevy recommendation)
 [profile.dev]

@@ -133,22 +133,33 @@ fn show_browse_tab(
         }
     }
 
-    // -- 4dir-walk animation preview --
-    let anim_allowed = current.width > 0
-        && grid_state.cell_w > 0
-        && grid_state.cell_h > 0
-        && {
-            let file_key = file_ref.to_string_repr();
-            let file_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
-            file_tags.contains("4dir-walk")
-                && AnimationPreview::is_valid_grid(
-                    current.width / grid_state.cell_w,
-                    current.height / grid_state.cell_h,
-                )
-        };
+    // -- 4-dir animation preview --
+    let anim_frame_count = if current.width > 0 && grid_state.cell_w > 0 && grid_state.cell_h > 0
+    {
+        let file_key = file_ref.to_string_repr();
+        let file_tags = manager.data.tags.get(&file_key).cloned().unwrap_or_default();
+        if file_tags.contains("4-dir") {
+            let grid_cols = current.width / grid_state.cell_w;
+            if file_tags.contains("4-frame")
+                && AnimationPreview::is_valid_grid(grid_cols, 4)
+            {
+                Some(4u32)
+            } else if file_tags.contains("3-frame")
+                && AnimationPreview::is_valid_grid(grid_cols, 3)
+            {
+                Some(3u32)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    if anim_allowed {
-        ui.heading("4dir Walk");
+    if let Some(frame_count) = anim_frame_count {
+        ui.heading(format!("4dir Walk ({frame_count}-frame)"));
         if anim_preview.playing {
             if ui.button("Stop").clicked() {
                 stop_anim_if_playing(anim_preview, camera);
@@ -157,6 +168,7 @@ fn show_browse_tab(
             anim_preview.playing = true;
             anim_preview.cycle_pos = 0;
             anim_preview.timer = 0.0;
+            anim_preview.frame_count = frame_count;
             camera.fit_requested = true;
         }
         ui.separator();
@@ -684,52 +696,146 @@ fn show_bundles_tab(
                     }
                 });
 
+                // Export template
+                let tpl_has_focus = std::cell::Cell::new(false);
+                ui.horizontal(|ui| {
+                    ui.label("Template:");
+                    let te = egui::TextEdit::singleline(&mut bundle.export_template)
+                        .id(ui.make_persistent_id(format!("tpl_{bundle_name}")));
+                    let response = ui.add(te);
+                    if response.lost_focus() {
+                        save_needed = true;
+                    }
+                    tpl_has_focus.set(response.has_focus());
+                });
+
                 // Snapshot for query (avoids borrow conflict with manager)
                 let bundle_snapshot = data::BundleDef {
                     export_path: bundle.export_path.clone(),
+                    export_template: bundle.export_template.clone(),
                     tag_filter: bundle.tag_filter.clone(),
                 };
+                // End the mutable borrow of `bundle`
+                let _ = bundle;
+
+                // Show placeholder reference while template field has focus
+                if tpl_has_focus.get() {
+                    let matched_for_vars =
+                        manager.data.query_bundle_files(&bundle_snapshot);
+                    let example_vars = matched_for_vars
+                        .first()
+                        .map(|k| export::TemplateVars::from_key(k));
+
+                    egui::Frame::NONE
+                        .inner_margin(4.0)
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(2.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new(format!("tpl_ref_{bundle_name}"))
+                                .spacing([8.0, 2.0])
+                                .show(ui, |ui| {
+                                    let rows: Vec<(&str, String)> = match &example_vars {
+                                        Some(v) => vec![
+                                            ("{zip}", v.zip.clone()),
+                                            ("{stem}", v.stem.clone()),
+                                            ("{ext}", v.ext.clone()),
+                                            ("{name}", v.name.clone()),
+                                        ],
+                                        None => vec![
+                                            ("{zip}", "—".into()),
+                                            ("{stem}", "—".into()),
+                                            ("{ext}", "—".into()),
+                                            ("{name}", "—".into()),
+                                        ],
+                                    };
+                                    for (placeholder, val) in &rows {
+                                        ui.label(
+                                            egui::RichText::new(*placeholder).monospace(),
+                                        );
+                                        ui.colored_label(egui::Color32::LIGHT_GRAY, val);
+                                        ui.end_row();
+                                    }
+                                    if let Some(v) = &example_vars {
+                                        for (i, seg) in v.dirs.iter().enumerate() {
+                                            ui.label(
+                                                egui::RichText::new(format!("{{dir[{i}]}}"))
+                                                    .monospace(),
+                                            );
+                                            ui.colored_label(
+                                                egui::Color32::LIGHT_GRAY,
+                                                seg,
+                                            );
+                                            ui.end_row();
+                                        }
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new("{dir[N]}").monospace(),
+                                        );
+                                        ui.colored_label(egui::Color32::LIGHT_GRAY, "—");
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                }
+
                 let matched = manager.data.query_bundle_files(&bundle_snapshot);
 
-                // Matched files preview
-                ui.label(format!("{} matched files", matched.len()));
-                if !matched.is_empty() {
-                    egui::ScrollArea::vertical()
-                        .id_salt(format!("bundle_files_{bundle_name}"))
-                        .max_height(120.0)
-                        .show(ui, |ui| {
-                            for key in &matched {
-                                let file_ref = data::FileRef::from_string(key);
-                                ui.label(file_ref.display_name());
-                            }
-                        });
+                // Matched files preview — show resolved output paths
+                let preview = if !matched.is_empty() && !bundle_snapshot.export_template.is_empty()
+                {
+                    export::preview_output_paths(
+                        &bundle_snapshot.export_template,
+                        &matched,
+                    )
+                } else {
+                    Ok(Vec::new())
+                };
+
+                match &preview {
+                    Ok(paths) => {
+                        ui.label(format!("{} matched files", matched.len()));
+                        if !paths.is_empty() {
+                            egui::ScrollArea::vertical()
+                                .id_salt(format!("bundle_files_{bundle_name}"))
+                                .max_height(120.0)
+                                .show(ui, |ui| {
+                                    for p in paths {
+                                        ui.label(p.as_str());
+                                    }
+                                });
+                        }
+                    }
+                    Err(e) => {
+                        ui.label(format!("{} matched files", matched.len()));
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            format!("Template error: {e}"),
+                        );
+                    }
                 }
 
                 // Action buttons
                 let exporting = ui_state.export_task.is_some();
+                let can_export = preview.is_ok()
+                    && !matched.is_empty()
+                    && !bundle_snapshot.export_path.trim().is_empty()
+                    && !bundle_snapshot.export_template.trim().is_empty();
                 ui.horizontal(|ui| {
-                    ui.add_enabled_ui(!exporting, |ui| {
+                    ui.add_enabled_ui(!exporting && can_export, |ui| {
                         if ui.button("Export").clicked() {
-                            if bundle_snapshot.export_path.trim().is_empty() {
-                                ui_state.status_message =
-                                    Some(("Set an export path first.".into(), 3.0));
-                            } else if matched.is_empty() {
-                                ui_state.status_message =
-                                    Some(("No files match this bundle.".into(), 3.0));
-                            } else {
-                                match export::export_bundle_async(
-                                    &bundle_snapshot.export_path,
-                                    &matched,
-                                ) {
-                                    Ok(task) => {
-                                        ui_state.status_message =
-                                            Some(("Exporting\u{2026}".into(), 999.0));
-                                        ui_state.export_task = Some(task);
-                                    }
-                                    Err(e) => {
-                                        ui_state.status_message =
-                                            Some((format!("Export failed: {e}"), 5.0));
-                                    }
+                            match export::export_bundle_async(
+                                &bundle_snapshot.export_path,
+                                &bundle_snapshot.export_template,
+                                &matched,
+                            ) {
+                                Ok(task) => {
+                                    ui_state.status_message =
+                                        Some(("Exporting\u{2026}".into(), 999.0));
+                                    ui_state.export_task = Some(task);
+                                }
+                                Err(e) => {
+                                    ui_state.status_message =
+                                        Some((format!("Export failed: {e}"), 5.0));
                                 }
                             }
                         }

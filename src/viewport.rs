@@ -11,6 +11,7 @@ use crate::resources::*;
 
 const GRID_COLOR: Color = Color::srgba(1.0, 1.0, 0.0, 0.4);
 const CELL_HIGHLIGHT_COLOR: Color = Color::srgba(0.0, 1.0, 1.0, 0.6);
+const CELL_HOVER_COLOR: Color = Color::srgba(1.0, 1.0, 1.0, 0.3);
 const ZOOM_FACTOR: f32 = 1.15;
 
 // ---------------------------------------------------------------------------
@@ -61,12 +62,16 @@ pub fn update_preview_sprite(
 
     if anim.playing {
         let cw = grid_state.cell_w;
-        if cw > 0 {
+        let fc = anim.frame_count;
+        if cw > 0 && fc >= 3 {
             let cols = current.width / cw;
-            if cols >= 3 && cols % 3 == 0 {
-                let frame_index = WALK_CYCLE[anim.cycle_pos];
-                let frame_col = WALK_FRAME_COL[frame_index];
-                let expanded = build_expanded_image(rgba, cw, frame_col);
+            if cols >= fc && cols % fc == 0 {
+                let frame_col = if fc == 4 {
+                    anim.cycle_pos as u32
+                } else {
+                    WALK_FRAME_COL_3[WALK_CYCLE_3[anim.cycle_pos]]
+                };
+                let expanded = build_expanded_image(rgba, cw, fc, frame_col);
                 let handle = image_loader::rgba_to_bevy_handle(&expanded, &mut images);
                 commands.spawn((PreviewSprite, Sprite::from_image(handle), NoFrustumCulling));
                 return;
@@ -78,34 +83,36 @@ pub fn update_preview_sprite(
     commands.spawn((PreviewSprite, Sprite::from_image(handle), NoFrustumCulling));
 }
 
-/// Build an expanded image: each 3-col block gets a 4th column showing the
-/// current animation frame. Result is 4/3 the original width.
+/// Build an expanded image: each N-col block (N = frame_count) gets an extra
+/// column showing the current animation frame.
 fn build_expanded_image(
     rgba: &image::RgbaImage,
     cell_w: u32,
+    frame_count: u32,
     frame_col_offset: u32,
 ) -> image::RgbaImage {
     let orig_w = rgba.width();
     let orig_h = rgba.height();
     let cols = orig_w / cell_w;
-    let num_blocks = cols / 3;
-    let new_w = num_blocks * 4 * cell_w;
+    let num_blocks = cols / frame_count;
+    let dst_cols = frame_count + 1;
+    let new_w = num_blocks * dst_cols * cell_w;
 
     let mut out = image::RgbaImage::new(new_w, orig_h);
 
     for block in 0..num_blocks {
-        for local_col in 0..3u32 {
-            let src_x = (block * 3 + local_col) * cell_w;
-            let dst_x = (block * 4 + local_col) * cell_w;
+        for local_col in 0..frame_count {
+            let src_x = (block * frame_count + local_col) * cell_w;
+            let dst_x = (block * dst_cols + local_col) * cell_w;
             for y in 0..orig_h {
                 for x in 0..cell_w {
                     out.put_pixel(dst_x + x, y, *rgba.get_pixel(src_x + x, y));
                 }
             }
         }
-        // 4th column: animated frame
-        let src_x = (block * 3 + frame_col_offset) * cell_w;
-        let dst_x = (block * 4 + 3) * cell_w;
+        // Extra column: animated frame
+        let src_x = (block * frame_count + frame_col_offset) * cell_w;
+        let dst_x = (block * dst_cols + frame_count) * cell_w;
         for y in 0..orig_h {
             for x in 0..cell_w {
                 out.put_pixel(dst_x + x, y, *rgba.get_pixel(src_x + x, y));
@@ -244,6 +251,61 @@ pub fn cell_click(
     cell_selection.selected = Some((col, row));
 }
 
+pub fn cell_hover(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Res<CameraState>,
+    grid_state: Res<GridState>,
+    current: Res<CurrentImage>,
+    pointer: Res<EguiPointerState>,
+    anim: Res<AnimationPreview>,
+    mut cell_selection: ResMut<CellSelection>,
+) {
+    if !grid_state.visible || pointer.over_ui || anim.playing {
+        cell_selection.bypass_change_detection().hovered = None;
+        return;
+    }
+
+    let cw = grid_state.cell_w;
+    let ch = grid_state.cell_h;
+    if cw == 0 || ch == 0 || current.width == 0 || current.height == 0 {
+        cell_selection.bypass_change_detection().hovered = None;
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        cell_selection.bypass_change_detection().hovered = None;
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        cell_selection.bypass_change_detection().hovered = None;
+        return;
+    };
+
+    let screen_center_x = window.width() / 2.0;
+    let screen_center_y = window.height() / 2.0;
+    let safe_zoom = camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    let world_x = (cursor_pos.x - screen_center_x) / safe_zoom - camera.pan.x;
+    let world_y = -((cursor_pos.y - screen_center_y) / safe_zoom + camera.pan.y);
+
+    let img_w = current.width as f32;
+    let img_h = current.height as f32;
+    let img_x = world_x + img_w / 2.0;
+    let img_y = img_h / 2.0 - world_y;
+
+    let new_hover = if img_x >= 0.0 && img_y >= 0.0 && img_x < img_w && img_y < img_h {
+        Some(((img_x / cw as f32) as u32, (img_y / ch as f32) as u32))
+    } else {
+        None
+    };
+
+    if cell_selection.hovered != new_hover {
+        cell_selection.hovered = new_hover;
+    } else {
+        // No change — bypass change detection to avoid unnecessary redraws
+        cell_selection.bypass_change_detection();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Auto-fit zoom
 // ---------------------------------------------------------------------------
@@ -320,7 +382,7 @@ pub fn grid_keyboard(
         ui_state.show_shortcuts = !ui_state.show_shortcuts;
     }
 
-    if keyboard.just_pressed(KeyCode::KeyG) {
+    if keyboard.just_pressed(KeyCode::KeyG) && ui_state.active_tab == Tab::Browse {
         grid_state.visible = !grid_state.visible;
     }
 
@@ -378,7 +440,7 @@ pub fn animation_tick(
     if new_timer >= WALK_FRAME_DURATION {
         // Cycle advanced — normal mutation triggers is_changed()
         anim.timer = new_timer - WALK_FRAME_DURATION;
-        anim.cycle_pos = (anim.cycle_pos + 1) % WALK_CYCLE.len();
+        anim.cycle_pos = (anim.cycle_pos + 1) % WALK_CYCLE_3.len();
     } else {
         // Just ticking — bypass change detection to avoid rebuilding sprite every frame
         anim.bypass_change_detection().timer = new_timer;
@@ -412,11 +474,12 @@ pub fn draw_grid(
         return;
     }
 
-    // When animating, the displayed image is 4/3 wider (expanded)
+    // When animating, the displayed image is (fc+1)/fc wider (expanded)
     let w = if anim.playing {
+        let fc = anim.frame_count;
         let cols = current.width / grid_state.cell_w;
-        if cols >= 3 && cols % 3 == 0 {
-            orig_w * 4.0 / 3.0
+        if fc >= 3 && cols >= fc && cols % fc == 0 {
+            orig_w * (fc + 1) as f32 / fc as f32
         } else {
             orig_w
         }
@@ -436,6 +499,18 @@ pub fn draw_grid(
     for r in 0..=rows {
         let y = top - r as f32 * ch;
         gizmos.line_2d(Vec2::new(left, y), Vec2::new(left + w, y), GRID_COLOR);
+    }
+
+    // Highlight hovered cell
+    if let Some((col, row)) = cell_selection.hovered {
+        let x0 = left + col as f32 * cw;
+        let y0 = top - row as f32 * ch;
+        let x1 = x0 + cw;
+        let y1 = y0 - ch;
+        gizmos.line_2d(Vec2::new(x0, y0), Vec2::new(x1, y0), CELL_HOVER_COLOR);
+        gizmos.line_2d(Vec2::new(x1, y0), Vec2::new(x1, y1), CELL_HOVER_COLOR);
+        gizmos.line_2d(Vec2::new(x1, y1), Vec2::new(x0, y1), CELL_HOVER_COLOR);
+        gizmos.line_2d(Vec2::new(x0, y1), Vec2::new(x0, y0), CELL_HOVER_COLOR);
     }
 
     // Highlight selected cell (no highlight during animation — all blocks animate)

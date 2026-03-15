@@ -4,6 +4,7 @@
 //!   cargo run
 //!   cargo run -- D:/my-data-dir
 
+mod archive;
 mod data;
 mod detail_panel;
 mod export;
@@ -97,6 +98,7 @@ fn main() {
                 viewport::clear_cell_on_file_change,
                 viewport::pan_zoom,
                 viewport::cell_click,
+                viewport::cell_hover,
                 viewport::animation_tick,
                 viewport::grid_keyboard,
                 tree_panel::file_navigation,

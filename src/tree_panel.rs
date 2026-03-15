@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use std::path::{Path, PathBuf};
 
+use crate::archive;
 use crate::data::{self, DirRole, FileRef, ManagerData};
 use crate::image_loader;
 use crate::resources::*;
@@ -117,7 +118,7 @@ pub fn tree_panel_ui(
                     let search_root = pick_search_root(&selection, &manager.data);
                     if let Some(root) = search_root {
                         let re = tree_state.filter_regex.clone().unwrap();
-                        tree_state.search_root = root.clone();
+                        tree_state.search_root = root.to_string_repr();
                         tree_state.search_results = recursive_search(&root, &re);
                     }
                 }
@@ -397,11 +398,11 @@ fn show_dir(
             .and_then(|n| n.to_str())
             .unwrap_or("?");
 
-        let is_zip = name.to_ascii_lowercase().ends_with(".zip");
+        let is_archive = archive::is_archive(name);
         let is_image = image_loader::is_image_file(name);
 
-        // Apply regex filter to non-zip leaf files
-        if !is_zip {
+        // Apply regex filter to non-archive leaf files
+        if !is_archive {
             if let Some(ref re) = ctx.tree_state.filter_regex {
                 if !re.is_match(name) {
                     continue;
@@ -412,16 +413,16 @@ fn show_dir(
         let file_ref = FileRef::Disk(file.clone());
         let is_selected = ctx.selection.selected_path.as_ref() == Some(&file_ref);
 
-        if is_zip {
-            let zip_label = egui::RichText::new(format!("  \u{1F4E6} {name}"))
+        if is_archive {
+            let archive_label = egui::RichText::new(format!("  \u{1F4E6} {name}"))
                 .color(egui::Color32::from_rgb(200, 180, 100));
 
             let node_key = file.to_string_lossy().replace('\\', "/");
 
-            let header = egui::CollapsingHeader::new(zip_label).id_salt(file);
+            let header = egui::CollapsingHeader::new(archive_label).id_salt(file);
             let header = apply_open_state(header, &node_key, ctx.tree_state);
             let response = header.show(ui, |ui| {
-                show_zip_contents(ui, file, ctx, data);
+                show_archive_contents(ui, file, ctx, data);
             });
 
             track_expansion(response.openness, &node_key, ctx.tree_state);
@@ -450,46 +451,27 @@ fn show_dir(
 }
 
 // ---------------------------------------------------------------------------
-// Zip contents tree
+// Archive contents tree
 // ---------------------------------------------------------------------------
 
-fn show_zip_contents(
+fn show_archive_contents(
     ui: &mut egui::Ui,
-    zip_path: &Path,
+    archive_path: &Path,
     ctx: &mut TreeContext,
     data: &ManagerData,
 ) {
-    let file = match std::fs::File::open(zip_path) {
-        Ok(f) => f,
+    let entries = match archive::list_entries(archive_path) {
+        Ok(e) => e,
         Err(e) => {
             ui.colored_label(egui::Color32::RED, format!("Cannot open: {e}"));
             return;
         }
     };
 
-    let mut archive = match zip::ZipArchive::new(file) {
-        Ok(a) => a,
-        Err(e) => {
-            ui.colored_label(egui::Color32::RED, format!("Invalid zip: {e}"));
-            return;
-        }
-    };
-
-    let mut entries: Vec<String> = Vec::new();
-    for i in 0..archive.len() {
-        if let Ok(entry) = archive.by_index(i) {
-            let name = entry.name().to_string();
-            if !name.ends_with('/') {
-                entries.push(name);
-            }
-        }
-    }
-    entries.sort();
-
-    show_zip_entries(ui, zip_path, &entries, "", ctx, data);
+    show_archive_entries(ui, archive_path, &entries, "", ctx, data);
 }
 
-fn show_zip_entries(
+fn show_archive_entries(
     ui: &mut egui::Ui,
     zip_path: &Path,
     entries: &[String],
@@ -540,7 +522,7 @@ fn show_zip_entries(
             .id_salt(format!("{}{}", zip_path.display(), subdir));
         let header = apply_open_state(header, &node_key, ctx.tree_state);
         let response = header.show(ui, |ui| {
-            show_zip_entries(ui, zip_path, entries, subdir, ctx, data);
+            show_archive_entries(ui, zip_path, entries, subdir, ctx, data);
         });
 
         track_expansion(response.openness, &node_key, ctx.tree_state);
@@ -555,11 +537,11 @@ fn show_zip_entries(
 
     for file_entry in &files {
         let file_name = file_entry.rsplit('/').next().unwrap_or(file_entry);
-        let is_zip = file_name.to_ascii_lowercase().ends_with(".zip");
+        let is_nested_archive = archive::is_archive(file_name);
         let is_image = image_loader::is_image_file(file_name);
 
-        // Apply regex filter to non-zip leaf files
-        if !is_zip {
+        // Apply regex filter to non-archive leaf files
+        if !is_nested_archive {
             if let Some(ref re) = ctx.tree_state.filter_regex {
                 if !re.is_match(file_name) {
                     continue;
@@ -567,9 +549,9 @@ fn show_zip_entries(
             }
         }
 
-        if is_zip {
-            // Nested zip — render as expandable
-            let zip_label = egui::RichText::new(format!("  \u{1F4E6} {file_name}"))
+        if is_nested_archive {
+            // Nested archive — render as expandable
+            let archive_label = egui::RichText::new(format!("  \u{1F4E6} {file_name}"))
                 .color(egui::Color32::from_rgb(200, 180, 100));
 
             let node_key = format!(
@@ -578,11 +560,11 @@ fn show_zip_entries(
                 file_entry
             );
 
-            let header = egui::CollapsingHeader::new(zip_label)
+            let header = egui::CollapsingHeader::new(archive_label)
                 .id_salt(format!("nested_{}{}", zip_path.display(), file_entry));
             let header = apply_open_state(header, &node_key, ctx.tree_state);
             let response = header.show(ui, |ui| {
-                show_nested_zip_contents(ui, zip_path, file_entry, ctx, data);
+                show_nested_archive_contents(ui, zip_path, file_entry, ctx, data);
             });
 
             track_expansion(response.openness, &node_key, ctx.tree_state);
@@ -614,48 +596,36 @@ fn show_zip_entries(
 }
 
 // ---------------------------------------------------------------------------
-// Nested zip contents tree
+// Nested archive contents tree
 // ---------------------------------------------------------------------------
 
-fn show_nested_zip_contents(
+fn show_nested_archive_contents(
     ui: &mut egui::Ui,
     outer_zip: &Path,
     inner_entry: &str,
     ctx: &mut TreeContext,
     data: &ManagerData,
 ) {
-    let inner_bytes = match image_loader::read_zip_entry_bytes(outer_zip, inner_entry) {
+    let inner_bytes = match archive::read_entry(outer_zip, inner_entry) {
         Ok(bytes) => bytes,
         Err(e) => {
-            ui.colored_label(egui::Color32::RED, format!("Cannot read inner zip: {e}"));
+            ui.colored_label(egui::Color32::RED, format!("Cannot read inner archive: {e}"));
             return;
         }
     };
 
-    let cursor = std::io::Cursor::new(inner_bytes);
-    let mut archive = match zip::ZipArchive::new(cursor) {
-        Ok(a) => a,
+    let entries = match archive::list_entries_from_bytes(&inner_bytes, inner_entry) {
+        Ok(e) => e,
         Err(e) => {
-            ui.colored_label(egui::Color32::RED, format!("Invalid inner zip: {e}"));
+            ui.colored_label(egui::Color32::RED, format!("Invalid inner archive: {e}"));
             return;
         }
     };
 
-    let mut entries: Vec<String> = Vec::new();
-    for i in 0..archive.len() {
-        if let Ok(entry) = archive.by_index(i) {
-            let name = entry.name().to_string();
-            if !name.ends_with('/') {
-                entries.push(name);
-            }
-        }
-    }
-    entries.sort();
-
-    show_nested_zip_entries(ui, outer_zip, inner_entry, &entries, "", ctx, data);
+    show_nested_archive_entries(ui, outer_zip, inner_entry, &entries, "", ctx, data);
 }
 
-fn show_nested_zip_entries(
+fn show_nested_archive_entries(
     ui: &mut egui::Ui,
     outer_zip: &Path,
     inner_entry: &str,
@@ -709,7 +679,7 @@ fn show_nested_zip_entries(
             .id_salt(format!("nested_{}_{}_{}",outer_str, inner_entry, subdir));
         let header = apply_open_state(header, &node_key, ctx.tree_state);
         let response = header.show(ui, |ui| {
-            show_nested_zip_entries(ui, outer_zip, inner_entry, entries, subdir, ctx, data);
+            show_nested_archive_entries(ui, outer_zip, inner_entry, entries, subdir, ctx, data);
         });
 
         track_expansion(response.openness, &node_key, ctx.tree_state);
@@ -949,32 +919,23 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
                 None => "",
             };
 
-            let Ok(file) = std::fs::File::open(zip_path) else {
-                return Vec::new();
-            };
-            let Ok(mut archive) = zip::ZipArchive::new(file) else {
+            let Ok(all_entries) = archive::list_entries(zip_path) else {
                 return Vec::new();
             };
 
-            let mut files: Vec<String> = Vec::new();
-            for i in 0..archive.len() {
-                if let Ok(ze) = archive.by_index(i) {
-                    let name = ze.name().to_string();
-                    if name.ends_with('/') {
-                        continue;
-                    }
+            let mut files: Vec<String> = all_entries
+                .into_iter()
+                .filter(|name| {
                     let suffix = if prefix.is_empty() {
                         name.as_str()
                     } else if let Some(s) = name.strip_prefix(prefix) {
                         s
                     } else {
-                        continue;
+                        return false;
                     };
-                    if !suffix.contains('/') {
-                        files.push(name);
-                    }
-                }
-            }
+                    !suffix.contains('/')
+                })
+                .collect();
             files.sort();
             files
                 .into_iter()
@@ -994,34 +955,27 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
                 None => "",
             };
 
-            let Ok(inner_bytes) = image_loader::read_zip_entry_bytes(outer_zip, inner_entry)
+            let Ok(inner_bytes) = archive::read_entry(outer_zip, inner_entry) else {
+                return Vec::new();
+            };
+            let Ok(all_entries) = archive::list_entries_from_bytes(&inner_bytes, inner_entry)
             else {
                 return Vec::new();
             };
-            let cursor = std::io::Cursor::new(inner_bytes);
-            let Ok(mut archive) = zip::ZipArchive::new(cursor) else {
-                return Vec::new();
-            };
 
-            let mut files: Vec<String> = Vec::new();
-            for i in 0..archive.len() {
-                if let Ok(ze) = archive.by_index(i) {
-                    let name = ze.name().to_string();
-                    if name.ends_with('/') {
-                        continue;
-                    }
+            let mut files: Vec<String> = all_entries
+                .into_iter()
+                .filter(|name| {
                     let suffix = if prefix.is_empty() {
                         name.as_str()
                     } else if let Some(s) = name.strip_prefix(prefix) {
                         s
                     } else {
-                        continue;
+                        return false;
                     };
-                    if !suffix.contains('/') {
-                        files.push(name);
-                    }
-                }
-            }
+                    !suffix.contains('/')
+                })
+                .collect();
             files.sort();
             files
                 .into_iter()
@@ -1039,43 +993,70 @@ fn sibling_files(file_ref: &FileRef) -> Vec<FileRef> {
 // Recursive search
 // ---------------------------------------------------------------------------
 
-/// Pick the best root directory to search from.
+/// Pick the best root to search from.
 /// Uses the selected directory, or its parent if a file is selected,
 /// or falls back to the first asset root.
-fn pick_search_root(selection: &TreeSelection, data: &ManagerData) -> Option<String> {
+fn pick_search_root(selection: &TreeSelection, data: &ManagerData) -> Option<FileRef> {
     if let Some(ref file_ref) = selection.selected_path {
         match file_ref {
             FileRef::Disk(path) => {
                 if path.is_dir() {
-                    return Some(path.to_string_lossy().replace('\\', "/"));
+                    return Some(FileRef::Disk(path.clone()));
                 }
                 if let Some(parent) = path.parent() {
-                    return Some(parent.to_string_lossy().replace('\\', "/"));
+                    return Some(FileRef::Disk(parent.to_path_buf()));
                 }
             }
-            FileRef::ZipEntry { zip_path, .. } => {
-                if let Some(parent) = zip_path.parent() {
-                    return Some(parent.to_string_lossy().replace('\\', "/"));
-                }
+            FileRef::ZipEntry { zip_path, entry } => {
+                // Keep the entry prefix so search is scoped to the selected subdirectory
+                return Some(FileRef::ZipEntry {
+                    zip_path: zip_path.clone(),
+                    entry: entry.clone(),
+                });
             }
-            FileRef::NestedZipEntry { outer_zip, .. } => {
-                if let Some(parent) = outer_zip.parent() {
-                    return Some(parent.to_string_lossy().replace('\\', "/"));
-                }
+            FileRef::NestedZipEntry {
+                outer_zip,
+                inner_entry,
+                entry,
+            } => {
+                return Some(FileRef::NestedZipEntry {
+                    outer_zip: outer_zip.clone(),
+                    inner_entry: inner_entry.clone(),
+                    entry: entry.clone(),
+                });
             }
         }
     }
     // Fall back to first asset root
-    data.asset_roots.iter().next().cloned()
+    data.asset_roots
+        .iter()
+        .next()
+        .map(|r| FileRef::Disk(PathBuf::from(r)))
 }
 
 const MAX_SEARCH_RESULTS: usize = 200;
 
-/// Recursively search a directory for files matching the regex.
-/// Scans disk files and inside zip archives (including nested zips).
-fn recursive_search(root: &str, re: &regex::Regex) -> Vec<FileRef> {
+/// Recursively search for files matching the regex, starting from the given root.
+/// Supports disk directories, archive subdirectories, and nested archive subdirectories.
+fn recursive_search(root: &FileRef, re: &regex::Regex) -> Vec<FileRef> {
     let mut results = Vec::new();
-    search_dir(Path::new(root), re, &mut results, 0);
+    match root {
+        FileRef::Disk(path) => {
+            search_dir(path, re, &mut results, 0);
+        }
+        FileRef::ZipEntry { zip_path, entry } => {
+            let prefix = if entry.is_empty() { "" } else { entry.as_str() };
+            search_archive(zip_path, re, &mut results, prefix);
+        }
+        FileRef::NestedZipEntry {
+            outer_zip,
+            inner_entry,
+            entry,
+        } => {
+            let prefix = if entry.is_empty() { "" } else { entry.as_str() };
+            search_nested_archive(outer_zip, inner_entry, re, &mut results, prefix);
+        }
+    }
     results
 }
 
@@ -1100,8 +1081,8 @@ fn search_dir(dir: &Path, re: &regex::Regex, results: &mut Vec<FileRef>, depth: 
             search_dir(&path, re, results, depth + 1);
         } else {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.to_ascii_lowercase().ends_with(".zip") {
-                search_zip(&path, re, results);
+            if archive::is_archive(name) {
+                search_archive(&path, re, results, "");
             } else if re.is_match(name) {
                 results.push(FileRef::Disk(path));
             }
@@ -1109,70 +1090,66 @@ fn search_dir(dir: &Path, re: &regex::Regex, results: &mut Vec<FileRef>, depth: 
     }
 }
 
-fn search_zip(zip_path: &Path, re: &regex::Regex, results: &mut Vec<FileRef>) {
-    let Ok(file) = std::fs::File::open(zip_path) else {
-        return;
-    };
-    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+fn search_archive(
+    archive_path: &Path,
+    re: &regex::Regex,
+    results: &mut Vec<FileRef>,
+    prefix: &str,
+) {
+    let Ok(entries) = archive::list_entries(archive_path) else {
         return;
     };
 
-    for i in 0..archive.len() {
+    for name in entries {
         if results.len() >= MAX_SEARCH_RESULTS {
             return;
         }
-        let Ok(entry) = archive.by_index(i) else {
-            continue;
-        };
-        let name = entry.name().to_string();
-        if name.ends_with('/') {
+
+        // Skip entries outside the requested prefix
+        if !prefix.is_empty() && !name.starts_with(prefix) {
             continue;
         }
 
         let file_name = name.rsplit('/').next().unwrap_or(&name);
 
-        if file_name.to_ascii_lowercase().ends_with(".zip") {
-            // Nested zip — search inside it
-            drop(entry);
-            search_nested_zip(zip_path, &name, re, results);
+        if archive::is_archive(file_name) {
+            // Nested archive — search inside it
+            search_nested_archive(archive_path, &name, re, results, "");
         } else if re.is_match(file_name) {
             results.push(FileRef::ZipEntry {
-                zip_path: zip_path.to_path_buf(),
+                zip_path: archive_path.to_path_buf(),
                 entry: name,
             });
         }
     }
 }
 
-fn search_nested_zip(
-    outer_zip: &Path,
+fn search_nested_archive(
+    outer_archive: &Path,
     inner_entry: &str,
     re: &regex::Regex,
     results: &mut Vec<FileRef>,
+    prefix: &str,
 ) {
-    let Ok(inner_bytes) = image_loader::read_zip_entry_bytes(outer_zip, inner_entry) else {
+    let Ok(inner_bytes) = archive::read_entry(outer_archive, inner_entry) else {
         return;
     };
-    let cursor = std::io::Cursor::new(inner_bytes);
-    let Ok(mut archive) = zip::ZipArchive::new(cursor) else {
+    let Ok(entries) = archive::list_entries_from_bytes(&inner_bytes, inner_entry) else {
         return;
     };
 
-    for i in 0..archive.len() {
+    for name in entries {
         if results.len() >= MAX_SEARCH_RESULTS {
             return;
         }
-        let Ok(entry) = archive.by_index(i) else {
-            continue;
-        };
-        let name = entry.name().to_string();
-        if name.ends_with('/') {
+        // Skip entries outside the requested prefix
+        if !prefix.is_empty() && !name.starts_with(prefix) {
             continue;
         }
         let file_name = name.rsplit('/').next().unwrap_or(&name);
         if re.is_match(file_name) {
             results.push(FileRef::NestedZipEntry {
-                outer_zip: outer_zip.to_path_buf(),
+                outer_zip: outer_archive.to_path_buf(),
                 inner_entry: inner_entry.to_string(),
                 entry: name,
             });

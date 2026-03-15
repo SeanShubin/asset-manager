@@ -1,11 +1,10 @@
-//! Image loading from disk files and zip entries.
+//! Image loading from disk files and archive entries.
 
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::collections::HashSet;
-use std::io::Read;
-use std::path::Path;
 
+use crate::archive;
 use crate::data::FileRef;
 use crate::resources::ImageInfo;
 
@@ -47,29 +46,15 @@ pub fn load_image(file_ref: &FileRef) -> Result<LoadedImage, String> {
 
 pub fn load_raw_bytes(file_ref: &FileRef) -> Result<Vec<u8>, String> {
     match file_ref {
-        FileRef::Disk(path) => {
-            std::fs::read(path).map_err(|e| format!("Read error: {e}"))
-        }
-        FileRef::ZipEntry { zip_path, entry } => {
-            read_zip_entry_bytes(zip_path, entry)
-        }
+        FileRef::Disk(path) => std::fs::read(path).map_err(|e| format!("Read error: {e}")),
+        FileRef::ZipEntry { zip_path, entry } => archive::read_entry(zip_path, entry),
         FileRef::NestedZipEntry {
             outer_zip,
             inner_entry,
             entry,
         } => {
-            let inner_bytes = read_zip_entry_bytes(outer_zip, inner_entry)?;
-            let cursor = std::io::Cursor::new(inner_bytes);
-            let mut inner_archive =
-                zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid inner zip: {e}"))?;
-            let mut ze = inner_archive
-                .by_name(entry)
-                .map_err(|e| format!("Inner entry not found: {e}"))?;
-
-            let mut buf = Vec::new();
-            ze.read_to_end(&mut buf)
-                .map_err(|e| format!("Read inner entry error: {e}"))?;
-            Ok(buf)
+            let inner_bytes = archive::read_entry(outer_zip, inner_entry)?;
+            archive::read_entry_from_bytes(&inner_bytes, inner_entry, entry)
         }
     }
 }
@@ -86,23 +71,6 @@ fn analyze_rgba(rgba: &image::RgbaImage) -> (bool, usize) {
     }
 
     (has_alpha, colors.len())
-}
-
-/// Extract raw bytes of a zip entry from a disk zip file.
-pub fn read_zip_entry_bytes(zip_path: &Path, entry_name: &str) -> Result<Vec<u8>, String> {
-    let file = std::fs::File::open(zip_path)
-        .map_err(|e| format!("Cannot open zip {}: {e}", zip_path.display()))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Invalid zip: {e}"))?;
-    let mut entry = archive
-        .by_name(entry_name)
-        .map_err(|e| format!("Entry not found: {e}"))?;
-
-    let mut buf = Vec::new();
-    entry
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("Read entry error: {e}"))?;
-    Ok(buf)
 }
 
 /// Convert an RgbaImage to a Bevy Image handle.
