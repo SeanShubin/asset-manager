@@ -25,10 +25,11 @@ pub const TILE_INSET: f32 = 0.1;
 // Egui pointer ownership
 // ---------------------------------------------------------------------------
 
-/// Set each frame by the egui pass — true when the mouse is over a UI panel.
+/// Set each frame by the egui pass.
 #[derive(Resource, Default)]
 pub struct EguiPointerState {
     pub over_ui: bool,
+    pub wants_keyboard: bool,
 }
 
 // ---------------------------------------------------------------------------

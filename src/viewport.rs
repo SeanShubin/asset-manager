@@ -377,12 +377,18 @@ pub fn grid_keyboard(
     current: Res<CurrentImage>,
     mut grid_state: ResMut<GridState>,
     mut ui_state: ResMut<UiState>,
+    pointer: Res<EguiPointerState>,
 ) {
     if keyboard.just_pressed(KeyCode::F1) {
         ui_state.show_shortcuts = !ui_state.show_shortcuts;
     }
 
-    if keyboard.just_pressed(KeyCode::KeyG) && ui_state.active_tab == Tab::Browse {
+    // Don't handle grid hotkeys when a text field has focus
+    if pointer.wants_keyboard {
+        return;
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyG) {
         grid_state.visible = !grid_state.visible;
     }
 

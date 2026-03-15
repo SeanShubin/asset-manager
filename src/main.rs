@@ -126,7 +126,7 @@ fn main() {
         .run();
 }
 
-/// Track whether egui wants the pointer (mouse is over a UI panel).
+/// Track whether egui wants the pointer or keyboard input.
 fn update_egui_pointer_state(
     mut contexts: bevy_egui::EguiContexts,
     mut pointer_state: ResMut<EguiPointerState>,
@@ -135,6 +135,7 @@ fn update_egui_pointer_state(
         return;
     };
     pointer_state.over_ui = ctx.is_pointer_over_area();
+    pointer_state.wants_keyboard = ctx.wants_keyboard_input();
 }
 
 /// On startup, if a selected path was restored, load its image.
